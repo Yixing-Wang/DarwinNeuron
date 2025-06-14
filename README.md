@@ -1,4 +1,4 @@
-## The Evolution of a Spike<br>
+## Darwin's Neuron<br>
 _by ChatGPT, June 14, 2025_
 
 In circuits not of copper made,<br>
