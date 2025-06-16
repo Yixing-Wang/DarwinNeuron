@@ -17,12 +17,12 @@ class EA(ABC):
         pass
         
     @abstractmethod
-    def update(self, model_loss_fn):
+    def update(self, model_stats_fn):
         """Update estimation of the parameters using the samples on the loss landscape.
 
         Args:
-            model_loss_fn (function): this is the loss landscape function, a function which takes a model and returns 
-            its loss. The return value is a scalar tensor.
+            model_stats_fn (function): this is the loss landscape function, a function which takes a model and returns
+            the training metrics (loss, acc, etc.). The return value is an instance of Training.SNNStats.
         """
         pass
     

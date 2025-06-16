@@ -66,11 +66,11 @@ def train_loop_snn(es_model, train_dataloader, val_dataloader, loss_fn, device, 
     """    
     for batch, (x, y) in enumerate(train_dataloader):
         x, y = x.to(device), y.to(device)
-        def get_model_loss(model):
+        def get_model_stats(model):
             stats = run_snn_on_batch(model, x, y, loss_fn)
-            return stats.loss
+            return stats
 
-        es_model.update(get_model_loss)
+        es_model.update(get_model_stats)
 
         ## best model metrics as training metrics
         best_model = es_model.get_best_model()

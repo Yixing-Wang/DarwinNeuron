@@ -76,7 +76,7 @@ class ESParameter:
         # step the optimizer
         self.optimizer.step()
    
-        
+
 class ESModel(EA):
     """
     The class which keeps track of all the parameters in a model, handles sampling and updates
@@ -123,16 +123,16 @@ class ESModel(EA):
         param_list = [es_param.means for es_param in self.param_dict.values()]
         return self._params_to_model(param_list)
     
-    def update(self, model_loss_fn):
+    def update(self, model_stats_fn):
         """update estimation of the parameters using the samples on the loss landscape.
 
         Args:
-            model_loss_fn (method): a function which takes a model and returns the loss for that model. The return
-                value is a scalar tensor.
+            model_stats_fn (method): a function which takes a model and returns the an instance of SNNStats for that model. 
+                The return value is a scalar tensor.
         """
         samples_loss = []
         for model in self.samples():
-            samples_loss.append(model_loss_fn(model))            
+            samples_loss.append(model_stats_fn(model).loss)            
             
         samples_loss = torch.stack(samples_loss) 
         self.gradient_descent(samples_loss)
