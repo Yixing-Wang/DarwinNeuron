@@ -80,7 +80,7 @@ def train_loop_snn(es_model, train_dataloader, val_dataloader, loss_fn, device, 
         ## validation loss and accuracy
         val_stats = val_loop_snn(es_model, val_dataloader, loss_fn, device)
         
-        ## record keeping
+        ## record keeping 
         # train 
         run.log({'train_loss': best_stats.loss.item(), \
                 'train_acc' : best_stats.get_accuracy(), \
