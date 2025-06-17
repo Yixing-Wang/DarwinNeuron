@@ -5,7 +5,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import randman
 import torch
 import numpy as np
-import pandas as pd
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 

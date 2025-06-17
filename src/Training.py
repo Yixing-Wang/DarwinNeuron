@@ -80,7 +80,7 @@ def train_loop_snn(es_model, train_dataloader, val_dataloader, loss_fn, device, 
         ## validation loss and accuracy
         val_stats = val_loop_snn(es_model, val_dataloader, loss_fn, device)
         
-        ## record keeping 
+        ## record keeping
         # train 
         run.log({'train_loss': best_stats.loss.item(), \
                 'train_acc' : best_stats.get_accuracy(), \
@@ -92,3 +92,11 @@ def train_loop_snn(es_model, train_dataloader, val_dataloader, loss_fn, device, 
                 'val_spike_percentage': val_stats.get_spike_percentage(), \
                 'val_average_neuron_spikes': val_stats.get_average_neuron_spikes()}) 
         log_model(es_model, run)
+    
+    # log for this epoch
+    run.log({'epoch_val_loss': val_stats.loss.item(), \
+            'epoch_val_acc': val_stats.get_accuracy(), \
+            'epoch_val_spike_percentage': val_stats.get_spike_percentage(), \
+            'epoch_val_average_neuron_spikes': val_stats.get_average_neuron_spikes()})
+    log_model(es_model, run)
+    
