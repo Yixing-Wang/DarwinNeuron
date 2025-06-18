@@ -134,10 +134,20 @@ def read_randman10_dataset(path, batch_size):
         - nb_output: 10
         - nb_steps: 50
         - nb_data_samples: 1000
-        - train_test_split: 0.2
+        - train-val-test ratio: 0.6-0.2-0.2
     '''
     data = torch.load(path, weights_only=False)
-    train_dataset, val_dataset = train_test_split(data, test_size=0.2, shuffle=False)
+    tmp_dataset, _ = train_test_split(data, test_size=0.2, shuffle=False)
+    train_dataset, val_dataset = train_test_split(tmp_dataset, test_size=0.25, shuffle=False)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=512, shuffle=False)
     return train_dataloader, val_dataloader
+
+def read_randman_test_dataset(path):
+    '''
+        For hyperparameters see read_randman10_dataset().
+    '''
+    data = torch.load(path, weights_only=False)
+    _, test_dataset = train_test_split(data, test_size=0.2, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=512, shuffle=False)
+    return test_dataloader
