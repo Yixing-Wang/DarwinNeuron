@@ -1,5 +1,55 @@
 import torch
 import numpy as np
+import os
+from pathlib import Path
+import datetime
+import csv
+import random
+
+def init_result_csv(config, project):
+    """
+    create CSV file by run.config, load headers
+    """
+    results_dir = Path("results")
+    results_dir.mkdir(exist_ok=True)
+    filename = f"{project}.csv"
+    csv_path = results_dir / filename
+
+    # terms to record
+    metric_keys = [
+        "epoch", "batch",
+        "train_loss", "train_acc", "train_spike_percentage", "train_avg_spikes",
+        "val_loss", "val_acc", "val_spike_percentage", "val_avg_spikes"
+    ]
+
+    # hyperparameter + metric keys
+    config_keys = list(config.keys())
+    all_keys = config_keys + metric_keys
+
+    # header
+    write_header = not csv_path.exists()
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=all_keys)
+        if write_header:
+            writer.writeheader()
+
+    return str(csv_path), config_keys, metric_keys
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    # For CUDA (if used)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # cuDNN deterministic
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # hash deterministic
+    os.environ["PYTHONHASHSEED"] = str(seed)
 
 def spike_to_label(spike_train, scheme = 'highest_voltage'):
     """Convert spike train to the label in one-hot encoded class
