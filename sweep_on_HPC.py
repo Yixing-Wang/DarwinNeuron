@@ -14,7 +14,7 @@ from src.Utilities import init_result_csv, set_seed
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 ENTITY  = "DarwinNeuron"
-PROJECT = "PPSO-Randman10-HPC"
+PROJECT = "PPSO-Randman10-debug-HPC"
 SWEEP_FILE = "sweep_id.txt"
 
 sweep_config = {
@@ -33,18 +33,17 @@ sweep_config = {
         "learn_beta": {"value": False},        
         # Training:
         "std": {"values": [0.05, 0.1]},
-        "epochs": {"value":50},
-        "batch_size": {"values": [64]},
+        "epochs": {"value":30},
+        "batch_size": {"values": [256]},
         # Optimization:
         "loss_fn": {"value": "cross-entropy"},
         "optimizer": {"value": "Adam"},
-        "lr": {"values": [0.01, 0.001]},
+        "lr": {"values": [0.01]},
         "regularization": {"value": "none"},
         # Evolution Strategy:
-        "nb_model_samples": {"values": [100, 1000]},
-        "mirror": {"value": True},
-    },
-}
+        "nb_model_samples": {"values": [20, 100]},
+        "mirror": {"values": [False, True]},
+}}
 
 def train_snn(config=None):
     with torch.no_grad(), wandb.init(config=config) as run:

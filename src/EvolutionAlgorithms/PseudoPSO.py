@@ -7,10 +7,10 @@ from .EvolutionAlgorithm import EA
 from ..Training import SNNStats
 
 # -----------------------------------------------------------------------------
-# Pooling‑Pseudo‑PSO base model (PPSOModel)
+# Pooling-Pseudo-PSO base model (PPSOModel)
 # -----------------------------------------------------------------------------
 class PPSOModel(EA):
-    """PSO‑style optimiser compatible with new *stats* interface.
+    """PSO-style optimiser compatible with new *stats* interface.
 
     `update(model_stats_fn)` now expects a function that returns a **SNNStats**
     instance for each candidate model. Loss and accuracy are extracted from that
@@ -22,20 +22,20 @@ class PPSOModel(EA):
         self,
         Model: nn.Module,
         *model_args,
-        sample_size: int = 32,
+        sample_size: int = 100,
         param_std: float = 0.05,
         lr: float = 0.1,
         inertia: float = 0.5,
         c1: float = 1.5,
         c2: float = 1.5,
-        mirror: bool = True,
+        mirror: bool = False,
         device: str | torch.device = "cuda" if torch.cuda.is_available() else "cpu",
     ) -> None:
         self.ModelCls = Model
         self.device = torch.device(device)
         super().__init__(Model, device)
 
-        # hyper‑params
+        # hyper-params
         self.model_args = model_args
         self.sample_size = (sample_size // 2) * 2 if mirror else sample_size
         self.std = param_std
@@ -51,9 +51,9 @@ class PPSOModel(EA):
 
         # PSO state
         self.velocity = torch.zeros_like(self.mean)
-        self.group_best = self.mean.clone()
-        self.history_best = self.mean.clone()
-        self.history_best_loss = torch.tensor(float("inf"), device=self.device)
+        self.personal_best = self.mean.clone()
+        self.global_best = self.mean.clone()
+        self.global_best_loss = torch.tensor(float("inf"), device=self.device)
 
         # store last stats fn for _loss_of
         self._last_stats_fn: Optional[Callable[[nn.Module], SNNStats]] = None
@@ -83,19 +83,19 @@ class PPSOModel(EA):
         best_flat = flats[best_idx]
         best_loss = losses[best_idx]
 
-        if best_loss < self.history_best_loss:
-            self.history_best_loss = best_loss
-            self.history_best = best_flat.clone()
+        if best_loss < self.global_best_loss:
+            self.global_best_loss = best_loss
+            self.global_best = best_flat.clone()
 
         centre_loss = losses.mean()
-        if centre_loss < self._loss_of(self.group_best):
-            self.group_best = self.mean.clone()
+        if centre_loss < self._loss_of(self.personal_best):
+            self.personal_best = self.mean.clone()
 
         r1, r2 = torch.rand(2, device=self.device)
         self.velocity = (
             self.w * self.velocity
-            + self.c1 * r1 * (self.group_best - self.mean)
-            + self.c2 * r2 * (self.history_best - self.mean)
+            + self.c1 * r1 * (self.personal_best - self.mean)
+            + self.c2 * r2 * (self.global_best - self.mean)
         )
         self.mean = self.mean + self.lr * self.velocity
 
@@ -136,11 +136,11 @@ class PPSOModel(EA):
         return stats.loss.detach()
 
     def get_best_model(self) -> nn.Module:  # type: ignore[override]
-        return self._flat_to_model(self.history_best)
+        return self._flat_to_model(self.global_best)
 
 
 # -----------------------------------------------------------------------------
-# PPSOModelWithPooling — adds accuracy‑gated offspring pooling
+# PPSOModelWithPooling — adds accuracy-gated offspring pooling
 # -----------------------------------------------------------------------------
 class PPSOModelWithPooling(PPSOModel):
     def __init__(self, *args, acc_threshold: float = 0.95, topk_ratio: float = 0.25, **kw):
@@ -148,25 +148,38 @@ class PPSOModelWithPooling(PPSOModel):
         self.acc_threshold = acc_threshold
         self.topk_ratio = topk_ratio
 
-    def adaptive_pooling(self, flats: torch.Tensor, losses: torch.Tensor, accs: Optional[torch.Tensor] = None) -> None:  # noqa: N802
+    def adaptive_pooling(self,
+        flats: torch.Tensor,
+        losses: torch.Tensor,
+        accs: Optional[torch.Tensor] = None) -> None:
+        
         if accs is not None:
             best_acc = accs[torch.argmin(losses)]
             if best_acc >= self.acc_threshold:
                 return
 
+        # ---- Top-k + random offspring ----
         S = flats.size(0)
         k = max(2, int(S * self.topk_ratio))
         top_idx = torch.argsort(losses)[:k]
         topk = flats[top_idx]
+
         offspring = topk + self.std * torch.randn_like(topk)
-
         off_losses = torch.stack([self._loss_of(f) for f in offspring])
-        best_off = offspring[torch.argmin(off_losses)]
 
-        self.mean = best_off.detach()
-        self.velocity.zero_()
+        # ---- take the mean of best half in offspring ----
+        half = max(1, offspring.size(0) // 2)
+        best_half_idx = torch.argsort(off_losses)[:half]
+        new_mean = offspring[best_half_idx].mean(0).detach()
 
-        min_off = off_losses.min()
-        if min_off < self.history_best_loss:
-            self.history_best_loss = min_off
-            self.history_best = best_off.clone()
+        # ---- update mean，DO NOT RESET velocity----
+        self.mean = new_mean
+
+        # ---- global / personal best update ----
+        best_half_loss = off_losses[best_half_idx].mean()
+        if best_half_loss < self.global_best_loss:
+            self.global_best_loss = best_half_loss
+            self.global_best = new_mean.clone()
+        
+        if self._loss_of(self.mean) < self._loss_of(self.personal_best):
+            self.personal_best = self.mean.clone()
