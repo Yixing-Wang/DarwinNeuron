@@ -47,6 +47,7 @@ def regularized_cross_entropy(pred, y):
     return cross_entropy(pred, y) + regularization_term.mean()
 
 ## The Compeition Model
+# TODO: need to implement self.update() to keep up with the current pipline.
 class ExcitationPopulation(nn.Module):
     def __init__(self, nb_neurons, nb_input, nb_inh, beta, nb_decision_steps):
         super().__init__()        

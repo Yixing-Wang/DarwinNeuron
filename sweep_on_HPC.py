@@ -4,12 +4,13 @@ from torch.nn.functional import cross_entropy
 import wandb
 import os
 
-from src.RandmanFunctions import read_randman10_dataset
+from src.RandmanFunctions import read_randman_dataset, split_and_load
 from src.Models import RandmanSNN
 from src.EvolutionAlgorithms.EvolutionStrategy import ESModel
 from src.EvolutionAlgorithms.PseudoPSO import PPSOModel, PPSOModelWithPooling
 from src.Training import train_loop_snn
 from src.Utilities import init_result_csv, set_seed
+from src.LandscapeAnalysis import LossSurfacePlotter
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -49,30 +50,17 @@ def train_snn(config=None):
     with torch.no_grad(), wandb.init(config=config) as run:
         config = wandb.config
 
+        # update current run_name
         keys = ["seed", "std", "batch_size", "lr", "nb_model_samples"]
         sorted_items = [f"{k}{getattr(config, k)}" for k in sorted(keys)]
         run_name = "-".join(sorted_items)
-        run.name = run_name  # update current run_name
+        run.name = run_name  
         run.save()
 
         # setting up local csv recording (optional)
-        config_dict = dict(config)
-        result_path, config_keys, metric_keys = init_result_csv(config_dict, run.project)
-
-        # initialize Evolution Strategy instance
-        # es_model = ESModel(
-        #     RandmanSNN,
-        #     config.nb_input,
-        #     config.nb_hidden,
-        #     config.nb_output,
-        #     0.95,
-        #     sample_size=config.nb_model_samples,
-        #     param_std=config.std,
-        #     Optimizer=optim.Adam,
-        #     lr=config.lr,
-        #     device=device,
-        #     mirror=config.mirror,
-        # )
+        config_dict = dict(run.config)
+        config_dict['run_id'] = run.id
+        result_path, _, _ = init_result_csv(config_dict, run.project)
 
         set_seed(config.seed)
         es_model = PPSOModelWithPooling(
@@ -88,18 +76,25 @@ def train_snn(config=None):
         )
 
         # load dataset
-        train_loader, val_loader = read_randman10_dataset(
-            "data/randman_10_dataset.pt", batch_size=config.batch_size
-        )
+        train_loader, val_loader = split_and_load(read_randman_dataset(
+            run.config.nb_output,
+            run.config.nb_input,
+            run.config.nb_steps,
+            run.config.nb_data_samples,
+            run.config.dim_manifold,
+            run.config.alpha), run.config.batch_size)
+
+        # loss surface plotter
+        plotter_dir = f"results/{run.project}/runs/{run.id}/"
+        os.makedirs(plotter_dir, exist_ok=True)
+        loss_plotter = LossSurfacePlotter(plotter_dir+"illuminated_loss_surface.npz")
 
         # epochs
         for epoch in range(config.epochs):
             print(f"Epoch {epoch}\n-------------------------------")
 
             # train the model
-            train_loop_snn(
-            es_model, train_loader, val_loader, cross_entropy, device, run, epoch, results_path=result_path, config_dict=dict(config)
-            )
+            train_loop_snn(es_model, train_loader, val_loader, cross_entropy, device, run, epoch, result_path, loss_plotter)
 
 if __name__ == "__main__":
     # 1) In the first run，create sweep_id and write in sweep_id.txt

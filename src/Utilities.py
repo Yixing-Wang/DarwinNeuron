@@ -1,10 +1,7 @@
-import torch
+import torch, os, datetime, csv, random
 import numpy as np
-import os
 from pathlib import Path
-import datetime
-import csv
-import random
+from dataclasses import dataclass
 
 def init_result_csv(config, project):
     """
@@ -17,7 +14,7 @@ def init_result_csv(config, project):
 
     # terms to record
     metric_keys = [
-        "epoch", "batch",
+        "epoch", "batch", "step",
         "train_loss", "train_acc", "train_spike_percentage", "train_avg_spikes",
         "val_loss", "val_acc", "val_spike_percentage", "val_avg_spikes"
     ]
@@ -102,3 +99,80 @@ def spike_train_to_events(spike_train):
     
     non_zeros_indicies = np.nonzero(spike_train) # nonzeros: ([...dim 1 indicies for nonzero....], [...dim 2 indicies...])
     return np.stack(non_zeros_indicies).T
+
+@dataclass
+class SNNStats:
+    """
+    SNNStats is a utility class for tracking and analyzing statistics of a Spiking Neural Network (SNN) during training or evaluation.
+    Attributes:
+        loss (torch.Tensor): The loss value for the current batch or epoch.
+        correct (int): The number of correctly classified samples.
+        total (int): The total number of samples evaluated.
+        spike_count_per_neuron (torch.Tensor): A tensor containing the spike counts for each neuron in the batch. Shape: [batch_size, neurons]
+    Methods:
+        get_accuracy():
+            Calculates and returns the classification accuracy as a float.
+        get_spike_percentage():
+            Computes the percentage of neuron activations (spikes) above a threshold (0.5) across all samples and neurons.
+        get_average_neuron_spikes():
+            Returns the average number of spikes per neuron across the batch as a float.
+    """
+    loss: torch.Tensor
+    correct: int
+    total: int
+    spike_count_per_neuron: torch.Tensor # shape:[batch_size, neurons]
+    
+    def get_accuracy(self):
+        return self.correct / self.total
+    
+    def get_spike_percentage(self):
+        return ((self.spike_count_per_neuron>0.5).sum() / self.spike_count_per_neuron.numel()).item()
+    
+    def get_average_neuron_spikes(self):
+        return self.spike_count_per_neuron.mean().item()
+
+def run_snn_on_batch(model, x, y, loss_fn): 
+    # shape: [time_steps, batch_size, classes]
+    spikes, voltages = model(x)
+    pred_y = spike_to_label(voltages, scheme = 'highest_voltage')
+    logits = voltage_to_logits(voltages, scheme='highest-voltage')
+    
+    loss = loss_fn(logits, y.long())
+    correct = (pred_y == y).sum().item()
+    spike_count_per_neuron = spikes.sum(dim=0) # dim: [batch_size, neurons]
+    stats = SNNStats(loss, correct, len(y), spike_count_per_neuron)
+    
+    return stats
+
+def evaluate_snn(model, dataloader, loss_fn, device):
+    """
+    Evaluates a spiking neural network (SNN) model on a given dataset.
+    Args:
+        model (torch.nn.Module): The SNN model to evaluate.
+        dataloader (torch.utils.data.DataLoader): DataLoader providing input data and labels.
+        loss_fn (callable): Loss function to compute the loss.
+        device (torch.device): Device on which to perform computation (e.g., 'cpu' or 'cuda').
+    Returns:
+        SNNStats: An object containing the average loss, total number of correct predictions,
+                  total number of samples, and concatenated spike counts per neuron for all batches.
+    Side Effects:
+        Prints the accuracy and average loss over the dataset.
+    """    
+    size = len(dataloader.dataset)
+    num_batches = len(dataloader)
+    test_loss, correct = 0, 0
+    spike_count_per_neuron = []
+
+    for x, y in dataloader:
+        x, y = x.to(device), y.to(device)
+        stats = run_snn_on_batch(model, x, y, loss_fn) 
+        test_loss += stats.loss
+        correct += stats.correct
+        spike_count_per_neuron.append(stats.spike_count_per_neuron) 
+
+    test_loss /= num_batches
+    test_acc = correct / size
+    print(f"Accuracy: {(100*test_acc):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+    
+    # Here, result.spike_count_per_neuron has shape [total_data(sum of all batches), neurons]
+    return SNNStats(test_loss, correct, len(dataloader.dataset), torch.cat(spike_count_per_neuron, dim=0))

@@ -1,10 +1,8 @@
-import sys
-import os
+import sys, os, torch, uuid
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
 import randman
-import torch
 import numpy as np
+import pandas as pd
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 
@@ -46,7 +44,7 @@ def make_spiking_dataset(nb_classes=10, nb_units=100, nb_steps=100, step_frac=1.
     if SEED is not None:
         np.random.seed(SEED)
     
-    max_value = np.iinfo(int).max
+    max_value = np.iinfo(np.int32).max
     randman_seeds = np.random.randint(max_value, size=(nb_classes,nb_spikes) )
 
     for k in range(nb_classes):
@@ -100,6 +98,7 @@ def events_to_spike_train(data, nb_steps, nb_units):
     
     # astyle() will discard the decimal to give integer timestep
     spike_steps = data[:, :, 0].astype(int)
+    spike_steps[spike_steps == nb_steps] = nb_steps - 1
     spike_units = data[:, :, 1].astype(int)
     # These will be the indices to entrices in the spike train to be set to 1
     
@@ -110,13 +109,13 @@ def events_to_spike_train(data, nb_steps, nb_units):
     
     return spike_train    
 
-def get_randman_dataset(nb_classes = 2, nb_units = 10, nb_steps = 50, nb_samples = 1000):
+def get_randman_dataset(nb_classes = 2, nb_units = 10, nb_steps = 50, nb_samples = 1000, dim_manifold = 2, alpha = 2.0):
     """generate a TensorDataset encapsulated x and y, where x is spike trains
 
     Returns:
         TensorDataset: [nb_samples, time_steps, units] and [nb_samples]
     """
-    data, label = make_spiking_dataset(nb_classes, nb_units, nb_steps, nb_spikes=1, nb_samples = nb_samples)
+    data, label = make_spiking_dataset(nb_classes, nb_units, nb_steps, nb_spikes=1, nb_samples = nb_samples, dim_manifold=dim_manifold, alpha=alpha)
     spike_train = events_to_spike_train(data, nb_steps, nb_units)
     
     spike_train = torch.Tensor(spike_train)
@@ -127,27 +126,93 @@ def get_randman_dataset(nb_classes = 2, nb_units = 10, nb_steps = 50, nb_samples
     
     return dataset
 
-def read_randman10_dataset(path, batch_size):
-    '''
-        hyperparameters:
-        - nb_inputs: 100
-        - nb_output: 10
-        - nb_steps: 50
-        - nb_data_samples: 1000
-        - train-val-test ratio: 0.6-0.2-0.2
-    '''
-    data = torch.load(path, weights_only=False)
+def generate_and_save_randman(nb_classes=10, nb_units=10, nb_steps=50, nb_samples=1000, dim_manifold=2, alpha=2, save_dir="data/randman"):
+    os.makedirs(save_dir, exist_ok=True)
+    meta_path = os.path.join(save_dir, "meta-data.csv")
+    row = {
+        "filename": None,  # Placeholder, will be set if new
+        "nb_classes": nb_classes,
+        "nb_units": nb_units,
+        "nb_steps": nb_steps,
+        "nb_samples": nb_samples,
+        "dim_manifold": dim_manifold,
+        "alpha": alpha
+    }
+    # Check for existing parameter combination
+    if os.path.isfile(meta_path):
+        df = pd.read_csv(meta_path)
+        match = df.loc[
+            (df[["nb_classes", "nb_units", "nb_steps", "nb_samples", "dim_manifold", "alpha"]]
+             == [nb_classes, nb_units, nb_steps, nb_samples, dim_manifold, alpha]
+            ).all(axis=1)
+        ]
+        if not match.empty:
+            raise ValueError("A dataset with the specified parameters already exists in meta-data.csv.")
+    # Generate dataset
+    data = get_randman_dataset(
+        nb_classes=nb_classes,
+        nb_units=nb_units,
+        nb_steps=nb_steps,
+        nb_samples=nb_samples,
+        dim_manifold=dim_manifold,
+        alpha=alpha
+    )
+    # Generate random filename
+    filename = f"{uuid.uuid4().hex}.pt"
+    filepath = os.path.join(save_dir, filename)
+    # Save dataset
+    torch.save(data, filepath)
+    # Log parameters to meta-data.csv using pandas
+    row["filename"] = filename
+    if os.path.isfile(meta_path):
+        df = pd.read_csv(meta_path)
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    else:
+        df = pd.DataFrame([row])
+    df.to_csv(meta_path, index=False)
+    return filepath
+
+# Example usage:
+# saved_path = generate_and_save_randman(nb_classes=10, nb_units=10, nb_steps=50, nb_samples=1000, dim_manifold=2, alpha=3)
+
+def read_randman_dataset(nb_classes=10, nb_units=10, nb_steps=50, nb_samples=1000, dim_manifold=2, alpha=2, save_dir="data/randman"):
+
+    meta_path = os.path.join(save_dir, "meta-data.csv")
+    if not os.path.isfile(meta_path):
+        raise FileNotFoundError(f"Meta-data file not found at {meta_path}")
+
+    df = pd.read_csv(meta_path)
+    match = df[
+        (df["nb_classes"] == nb_classes) &
+        (df["nb_units"] == nb_units) &
+        (df["nb_steps"] == nb_steps) &
+        (df["nb_samples"] == nb_samples) &
+        (df["dim_manifold"] == dim_manifold) &
+        (df["alpha"] == alpha)
+    ]
+
+    if match.empty:
+        raise ValueError("No dataset found with the specified parameters.")
+
+    filename = match.iloc[0]["filename"]
+    filepath = os.path.join(save_dir, filename)
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError(f"Dataset file not found at {filepath}")
+
+    data = torch.load(filepath, weights_only=False)
+    return data
+
+def split_and_load(data, batch_size):
     tmp_dataset, _ = train_test_split(data, test_size=0.2, shuffle=False)
     train_dataset, val_dataset = train_test_split(tmp_dataset, test_size=0.25, shuffle=False)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=512, shuffle=False)
     return train_dataloader, val_dataloader
 
-def read_randman_test_dataset(path):
+def split_test_and_load(data):
     '''
         For hyperparameters see read_randman10_dataset().
     '''
-    data = torch.load(path, weights_only=False)
     _, test_dataset = train_test_split(data, test_size=0.2, shuffle=False)
     test_dataloader = DataLoader(test_dataset, batch_size=512, shuffle=False)
     return test_dataloader
