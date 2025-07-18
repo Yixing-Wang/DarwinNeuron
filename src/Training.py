@@ -89,7 +89,7 @@ def train_loop_snn(es_model, train_dataloader, val_dataloader, loss_fn, device, 
         range_lim = 2 * run.config.std
         
         center = parameters_to_vector(es_model.get_best_model().parameters()).cpu().numpy()
-        f = get_parameter_to_loss_fn(val_dataloader, es_model.get_best_model(), loss_fn, device)
+        f = get_parameter_to_loss_fn(train_dataloader, es_model.get_best_model(), loss_fn, device)
         parameter_grid, loss_grid = loss_plotter.illuminate_2d(center, f, range_lim, ILLUMINATE_RESOLUTION)
         fig = loss_plotter.get_plot(PLOT_RESOLUTION)
         

@@ -1,7 +1,8 @@
-import torch, os, datetime, csv, random
+import torch, os, datetime, csv, random, uuid
 import numpy as np
+import pandas as pd
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 def init_result_csv(config, project):
     """
@@ -176,3 +177,24 @@ def evaluate_snn(model, dataloader, loss_fn, device):
     
     # Here, result.spike_count_per_neuron has shape [total_data(sum of all batches), neurons]
     return SNNStats(test_loss, correct, len(dataloader.dataset), torch.cat(spike_count_per_neuron, dim=0))
+
+def next_id(df):
+    return 0 if (df is None) or df.empty else df.index.max() + 1
+
+def match_config(df: pd.DataFrame, config):
+    """
+    Find DataFrame rows matching all dataclass parameter values.
+    
+    Args:
+        df (pd.DataFrame): DataFrame to search with matching column names
+        config: Any dataclass instance with parameters to match
+        
+    Returns:
+        pd.DataFrame: Rows where all parameter values match, empty if none found
+    """
+    
+    param_keys = list(asdict(config).keys())
+    match = df.loc[
+        (df[param_keys] == pd.Series(asdict(config))).all(axis=1)
+    ]
+    return match

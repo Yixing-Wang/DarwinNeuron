@@ -2,6 +2,7 @@ import torch
 import snntorch as snn
 import torch.nn as nn
 from torch.nn.functional import cross_entropy
+from torch.nn.utils import parameters_to_vector
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -39,6 +40,11 @@ class RandmanSNN(nn.Module):
 
         # Each stacked item has shape [time_steps, batch_size, num_neurons]
         return torch.stack(spk1_rec, dim=0), torch.stack(mem2_rec, dim=0)  
+    
+def calc_randmansnn_parameters(nb_inputs, nb_hidden, nb_outputs):
+    model = RandmanSNN(num_inputs=nb_inputs, num_hidden=nb_hidden, num_outputs=nb_outputs, learn_beta=False).to('cpu')
+    vector = parameters_to_vector(model.parameters())
+    return vector.size(0)
 
 def regularized_cross_entropy(pred, y):
     # pred shape: [batch, classes (logits)]

@@ -3,8 +3,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import randman
 import numpy as np
 import pandas as pd
+from dataclasses import dataclass, asdict
+
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
+
+from src.Utilities import next_id, match_config
 
 SEED = 42
 
@@ -109,14 +113,66 @@ def events_to_spike_train(data, nb_steps, nb_units):
     
     return spike_train    
 
-def get_randman_dataset(nb_classes = 2, nb_units = 10, nb_steps = 50, nb_samples = 1000, dim_manifold = 2, alpha = 2.0):
-    """generate a TensorDataset encapsulated x and y, where x is spike trains
+@dataclass
+class RandmanConfig:
+    nb_classes: int = 10
+    nb_units: int = 10
+    nb_steps: int = 50
+    nb_samples: int = 1000
+    dim_manifold: int = 2
+    alpha: float = 2.0    
+    
+    @classmethod
+    def lookup_by_id(cls, table_path, id: int):
+        """
+        Lookup a row by id in a CSV file.
+        Args:
+            table_path (str): Path to the CSV file containing Randman configurations.
+            id (int): The ID of the configuration to look up.
+        Returns:
+            RandmanConfig: An instance of RandmanConfig with parameters from the specified row.
+        """
+        df = pd.read_csv(table_path, index_col="id")
+        if id not in df.index:
+            raise ValueError(f"ID {id} not found in {table_path}.")
+        kwargs = df.loc[id].to_dict()
+        kwargs.pop("filename")
+        return cls(**kwargs)
+    
+    def read_dataset(self, save_dir="data/randman"):
+        meta_path = os.path.join(save_dir, "meta-data.csv")
+        if not os.path.isfile(meta_path):
+            raise FileNotFoundError(f"Meta-data file not found at {meta_path}")
 
-    Returns:
-        TensorDataset: [nb_samples, time_steps, units] and [nb_samples]
+        df = pd.read_csv(meta_path)
+        match = match_config(df, self)
+        if match.empty:
+            raise ValueError("No dataset found with the specified parameters.")
+
+        filename = match.iloc[0]["filename"]
+        filepath = os.path.join(save_dir, filename)
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"Dataset file not found at {filepath}")
+
+        data = torch.load(filepath, weights_only=False)
+        return data
+
+def get_randman_dataset(config: RandmanConfig):
     """
-    data, label = make_spiking_dataset(nb_classes, nb_units, nb_steps, nb_spikes=1, nb_samples = nb_samples, dim_manifold=dim_manifold, alpha=alpha)
-    spike_train = events_to_spike_train(data, nb_steps, nb_units)
+    Generate a spiking neural network dataset using Randman configuration.
+    Args:
+        config (RandmanConfig): Configuration object containing parameters for
+            dataset generation including nb_steps, nb_units, and other settings.
+            The 'id' and 'filename' fields are excluded from dataset generation.
+    Returns:
+        TensorDataset: A PyTorch dataset containing spike train tensors and
+            corresponding label tensors, ready for use in neural network training.
+    Note:
+        - The function generates exactly 1 spike per unit (nb_spikes=1)
+    """
+    
+    data, label = make_spiking_dataset(**asdict(config), nb_spikes=1)
+    spike_train = events_to_spike_train(data, config.nb_steps, config.nb_units)
     
     spike_train = torch.Tensor(spike_train)
     label = torch.Tensor(label)
@@ -126,81 +182,43 @@ def get_randman_dataset(nb_classes = 2, nb_units = 10, nb_steps = 50, nb_samples
     
     return dataset
 
-def generate_and_save_randman(nb_classes=10, nb_units=10, nb_steps=50, nb_samples=1000, dim_manifold=2, alpha=2, save_dir="data/randman"):
+def generate_and_save_randman(config: RandmanConfig, save_dir="data/randman"):    
+    # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     meta_path = os.path.join(save_dir, "meta-data.csv")
-    row = {
-        "filename": None,  # Placeholder, will be set if new
-        "nb_classes": nb_classes,
-        "nb_units": nb_units,
-        "nb_steps": nb_steps,
-        "nb_samples": nb_samples,
-        "dim_manifold": dim_manifold,
-        "alpha": alpha
-    }
+    
+    # convert to dict
+    config_dict = asdict(config)
+    
     # Check for existing parameter combination
     if os.path.isfile(meta_path):
-        df = pd.read_csv(meta_path)
-        match = df.loc[
-            (df[["nb_classes", "nb_units", "nb_steps", "nb_samples", "dim_manifold", "alpha"]]
-             == [nb_classes, nb_units, nb_steps, nb_samples, dim_manifold, alpha]
-            ).all(axis=1)
-        ]
+        df = pd.read_csv(meta_path, index_col='id')
+        match = match_config(df, config)
         if not match.empty:
-            raise ValueError("A dataset with the specified parameters already exists in meta-data.csv.")
+            raise ValueError("Dataset already exists with the same parameters.")
+
     # Generate dataset
-    data = get_randman_dataset(
-        nb_classes=nb_classes,
-        nb_units=nb_units,
-        nb_steps=nb_steps,
-        nb_samples=nb_samples,
-        dim_manifold=dim_manifold,
-        alpha=alpha
-    )
+    data = get_randman_dataset(config)
+    
     # Generate random filename
     filename = f"{uuid.uuid4().hex}.pt"
     filepath = os.path.join(save_dir, filename)
+    config_dict['filename'] = filename
+    
     # Save dataset
     torch.save(data, filepath)
-    # Log parameters to meta-data.csv using pandas
-    row["filename"] = filename
+    
+    # Log parameters to meta-data.csv 
     if os.path.isfile(meta_path):
-        df = pd.read_csv(meta_path)
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df = pd.read_csv(meta_path, index_col='id')
+        row_df = pd.DataFrame([config_dict], index=[next_id(df)])
+        df = pd.concat([df, row_df], ignore_index=False)
     else:
-        df = pd.DataFrame([row])
-    df.to_csv(meta_path, index=False)
+        # Start with ID 0 for the first entry
+        df = pd.DataFrame([config_dict], index=[0])
+
+    df.to_csv(meta_path, index=True, index_label='id')
     return filepath
-
-# Example usage:
-# saved_path = generate_and_save_randman(nb_classes=10, nb_units=10, nb_steps=50, nb_samples=1000, dim_manifold=2, alpha=3)
-
-def read_randman_dataset(nb_classes=10, nb_units=10, nb_steps=50, nb_samples=1000, dim_manifold=2, alpha=2, save_dir="data/randman"):
-
-    meta_path = os.path.join(save_dir, "meta-data.csv")
-    if not os.path.isfile(meta_path):
-        raise FileNotFoundError(f"Meta-data file not found at {meta_path}")
-
-    df = pd.read_csv(meta_path)
-    match = df[
-        (df["nb_classes"] == nb_classes) &
-        (df["nb_units"] == nb_units) &
-        (df["nb_steps"] == nb_steps) &
-        (df["nb_samples"] == nb_samples) &
-        (df["dim_manifold"] == dim_manifold) &
-        (df["alpha"] == alpha)
-    ]
-
-    if match.empty:
-        raise ValueError("No dataset found with the specified parameters.")
-
-    filename = match.iloc[0]["filename"]
-    filepath = os.path.join(save_dir, filename)
-    if not os.path.isfile(filepath):
-        raise FileNotFoundError(f"Dataset file not found at {filepath}")
-
-    data = torch.load(filepath, weights_only=False)
-    return data
 
 def split_and_load(data, batch_size):
     tmp_dataset, _ = train_test_split(data, test_size=0.2, shuffle=False)
