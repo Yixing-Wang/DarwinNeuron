@@ -1,6 +1,0 @@
-id,randman_id,nb_hidden,loss_fn,dim
-0,14,40,cross_entropy,200
-1,15,40,cross_entropy,320
-2,16,40,cross_entropy,480
-3,17,40,cross_entropy,200
-4,18,40,cross_entropy,200
