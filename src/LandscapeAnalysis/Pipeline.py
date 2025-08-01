@@ -1,31 +1,134 @@
-################################ Generate Randman Problem ################################
+################################ Randman Problem ################################
 import sqlite3
 import pandas as pd
 
 from dataclasses import dataclass
-from src.Models import calc_randmansnn_parameters
+from typing import Callable
+from abc import ABC, abstractmethod
+
+from src.RandmanFunctions import split_and_load
+from torch.nn.functional import cross_entropy
+from src.Models import RandmanSNNConfig, RandmanSNN, calc_randmansnn_parameters
 from src.RandmanFunctions import RandmanConfig, generate_and_save_randman, match_config
 
+from src.LandscapeAnalysis.Utils import get_parameter_to_loss_fn
+
 @dataclass
-class RandmanProblemConfig:
-    randman_id: int
-    nb_hidden: int
+class ELAProblemConfig(ABC):
+    """
+    Abstract base class for all problem configurations in the ELA pipeline.
+    """
+    
+    @classmethod
+    @abstractmethod
+    def lookup_by_id(cls, id: int, db_path='data/landscape-analysis.db') -> 'ELAProblemConfig':
+        pass
+    
+    @abstractmethod
+    def write_to_db(self, dim: int, db_path='data/landscape-analysis.db') -> None:
+        pass
+    
+    @abstractmethod
+    def get_id(self, db_path='data/landscape-analysis.db') -> int:
+        pass
+    
+    @abstractmethod
+    def get_type(self) -> str:
+        pass
+    
+    @abstractmethod
+    def get_loss_surface_fn(self, *args) -> Callable:
+        pass
+
+@dataclass
+class NNProblemConfig(ELAProblemConfig):
+    data_type: str
+    data_id: int
+    model_type: str
+    model_id: int
     loss_fn: str
 
     @classmethod
     def lookup_by_id(cls, id: int, db_path='data/landscape-analysis.db'):
         con = sqlite3.connect(db_path)
         cur = con.cursor()
-        cur.execute(f"SELECT randman_id, nb_hidden, loss_fn FROM problems WHERE id = {id}")
+        cur.execute(f"SELECT data_type, data_id, model_type, model_id, loss_fn FROM nn_problems WHERE id = {id}")
         row = cur.fetchone()
         con.close()
+        if row is None:
+            raise ValueError(f"No NNProblemConfig found with id {id}.")
+
         return cls(*row) 
     
-def generate_randman_problem(randman_config: RandmanConfig, nb_hidden=40, loss_fn = 'cross_entropy', db_path='data/landscape-analysis.db'):
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
+    def write_to_db(self, dim: int, db_path='data/landscape-analysis.db'):
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Insert the new problem into the database. Note: uniqueness is enforced by db constraints
+        try:
+            cur.execute(f"""
+                INSERT INTO nn_problems (data_type, data_id, model_type, model_id, loss_fn, dim) 
+                VALUES ('{self.data_type}', {self.data_id}, '{self.model_type}', {self.model_id}, '{self.loss_fn}', {dim})
+            """)
+        except sqlite3.IntegrityError:
+            con.close()
+            print(f"Problem {self} already exists in the database.")
+            raise
+        
+        con.commit()
+        con.close()
+        print(f"Added {self} to the nn_problems.")
 
-    # Find matching randman configuration
+    def get_id(self, db_path='data/landscape-analysis.db'):
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Check if the problem configuration exists in the database
+        cur.execute(f"""
+            SELECT id FROM nn_problems 
+            WHERE data_type = ? AND data_id = ? AND model_type = ? AND model_id = ? AND loss_fn = ?
+        """, (self.data_type, self.data_id, self.model_type, self.model_id, self.loss_fn))
+        
+        row = cur.fetchone()
+        con.close()
+        
+        if row is None:
+            raise ValueError(f"No problem found with {self}.")
+        
+        return row[0]
+
+    def get_type(self):
+        return 'nn'
+
+    def get_model(self, db_path='data/landscape-analysis.db', randman_table_path='data/randman/meta-data.csv'):
+        if self.data_type == 'randman' and self.model_type == 'snn':
+            data_config = RandmanConfig.lookup_by_id(self.data_id, randman_table_path)
+            model_config = RandmanSNNConfig.lookup_by_id(self.model_id, db_path)
+            model = RandmanSNN(data_config.nb_units, data_config.nb_classes, model_config)
+        else:
+            raise ValueError(f"Unsupported data type {self.data_type} or model type {self.model_type}.")
+        return model
+
+    def get_loader(self, db_path='data/landscape-analysis.db', randman_table_path='data/randman/meta-data.csv'):
+        if self.data_type == 'randman':
+            data_config = RandmanConfig.lookup_by_id(self.data_id, randman_table_path)
+            loader, _ = split_and_load(data_config.read_dataset(), batch_size=516)
+        else:
+            raise ValueError(f"Unsupported data type {self.data_type}.")
+        return loader
+
+    def get_loss_surface_fn(self, db_path='data/landscape-analysis.db', randman_table_path='data/randman/meta-data.csv', device='cuda') -> Callable:
+        if self.data_type == 'randman':
+            loader = self.get_loader(db_path)
+        if self.model_type == 'snn':
+            model = self.get_model(db_path, randman_table_path)
+        if self.loss_fn == 'cross_entropy':
+            loss_fn = cross_entropy
+        f = get_parameter_to_loss_fn(loader, model, loss_fn, device)
+        return f
+
+def generate_randman_problem(randman_config: RandmanConfig, snn_config: RandmanSNNConfig, loss_fn = 'cross_entropy', db_path='data/landscape-analysis.db'):
+    ## 1) Randman
     randman_df = pd.read_csv("data/randman/meta-data.csv")
     randman_row = match_config(randman_df, randman_config)
 
@@ -39,29 +142,111 @@ def generate_randman_problem(randman_config: RandmanConfig, nb_hidden=40, loss_f
     randman_row = randman_row.iloc[0]
 
     # Calculate the dimension for the problem
-    dim = calc_randmansnn_parameters(randman_config.nb_units, nb_hidden, randman_config.nb_classes)
-
-    # Check if the problem already exists in the database
-    cur.execute(f"""
-        SELECT id FROM problems 
-        WHERE randman_id = {randman_row["id"]} AND nb_hidden = {nb_hidden} AND loss_fn = '{loss_fn}'
-    """)
-    existing_problem = cur.fetchone()
-
-    if existing_problem:
-        con.close()
-        raise ValueError(f"Problem with randman_id {randman_row['id']} and nb_hidden {nb_hidden} already exists.")
-
-    # Insert the new problem into the database
-    cur.execute(f"""
-        INSERT INTO problems (randman_id, nb_hidden, loss_fn, dim) 
-        VALUES ({int(randman_row["id"])}, {nb_hidden}, '{loss_fn}', {dim})
-    """)
-
-    con.commit()
-    con.close()
+    dim = calc_randmansnn_parameters(randman_config.nb_units, randman_config.nb_classes, snn_config)
     
-##################################### Generate Parameter Samples #####################################
+    ## 2) RandmanSNN
+    try:
+        snn_id = snn_config.get_id(db_path)
+    # create a new SNN configuration if it does not exist
+    except ValueError:
+        snn_config.write_to_db(db_path)
+        snn_id = snn_config.get_id(db_path)
+
+    ## 3) NNProblemConfig
+    problem_config = NNProblemConfig(
+        data_type='randman',
+        data_id=randman_row['id'],
+        model_type='snn',
+        model_id=snn_id,
+        loss_fn=loss_fn
+    )
+    problem_config.write_to_db(dim, db_path)
+    print(f"Generated Randman problem with ID {problem_config.data_id} and SNN model ID {problem_config.model_id}.")
+    
+#################################### BBOB Problems ###################################
+import cocoex
+
+@dataclass
+class BBOBProblemConfig(ELAProblemConfig):
+    """
+    Note: COCO's interface is bizarre. Up to 44 dims, we can use BareProblem to index arbitrary instances.
+    Above 44 dims, we need to use Suite with only options in [80, 160, 320, 640] and up to 15 instances.
+    """
+    function_idx: int
+    instance_idx: int
+    dim: int
+    
+    @classmethod
+    def lookup_by_id(cls, id: int, db_path='data/landscape-analysis.db'):
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute(f"SELECT function_idx, instance_idx, dim FROM bbob_problems WHERE id = {id}")
+        row = cur.fetchone()
+        con.close()
+        if row is None:
+            raise ValueError(f"No BBOBProblemConfig found with id {id}.")
+        
+        return cls(*row)
+    
+    def write_to_db(self, db_path='data/landscape-analysis.db'):
+        # check dims and indices
+        available_large_dims = [80, 160, 320, 640]
+        if self.dim > 44 and (self.dim not in available_large_dims or self.instance_idx > 15):
+            raise ValueError(f"Invalid configuration: dim > 44 must be in {available_large_dims} and instance_idx must be in [1, 15].")
+        
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Insert the new problem into the database. Note: uniqueness is enforced by db constraints
+        try:
+            cur.execute(f"""
+                INSERT INTO bbob_problems (function_idx, instance_idx, dim) 
+                VALUES ({self.function_idx}, {self.instance_idx}, {self.dim})
+            """)
+        except sqlite3.IntegrityError:
+            con.close()
+            print(f"Problem {self} already exists in the database.")
+            raise
+        
+        con.commit()
+        con.close()
+        print(f"Added {self} to the bbob_problems.")
+
+    def get_loss_surface_fn(self, *args) -> Callable:        
+        if self.dim <= 44:
+            problem = cocoex.BareProblem(
+                suite_name="bbob",
+                function=self.function_idx,
+                dimension=self.dim,
+                instance=self.instance_idx
+            )
+        else:
+            suite = cocoex.Suite("bbob-largescale","",f"dimensions:{self.dim} function_indices:{self.function_idx} instance_indices:{self.instance_idx}")
+            problem = suite[0]
+        return problem
+    
+    def get_id(self, db_path='data/landscape-analysis.db'):
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Check if the problem configuration exists in the database
+        cur.execute(f"""
+            SELECT id FROM bbob_problems 
+            WHERE function_idx = ? AND instance_idx = ? AND dim = ?
+        """, (self.function_idx, self.instance_idx, self.dim))
+        
+        row = cur.fetchone()
+        con.close()
+        
+        if row is None:
+            raise ValueError(f"No problem found with {self}.")
+        
+        return row[0]
+
+    def get_type(self):
+        return 'bbob'
+
+##################################### Parameter Samples #####################################
 import uuid, os, sqlite3
 import numpy as np
 from dataclasses import dataclass
@@ -69,39 +254,84 @@ from pflacco.sampling import create_initial_sample
 
 @dataclass
 class ParameterSampleConfig:
-    dim: int = 3
-    nb_sample: int = 1024
-    method: str = "sobol"
-    lower_bound: float = 0.0
-    upper_bound: float = 1.0
+    dim: int
+    nb_sample: int
+    method: str
+    lower_bound: float
+    upper_bound: float
+    # version is appended in lookup_by_id().
     
     @classmethod
     def lookup_by_id(cls, id: int, db_path='data/landscape-analysis.db'):
         con = sqlite3.connect(db_path)
         cur = con.cursor()
-        cur.execute(f"SELECT dim, nb_sample, method, lower_bound, upper_bound FROM samples WHERE id={id}")
+        cur.execute(f"SELECT dim, nb_sample, method, lower_bound, upper_bound, version FROM samples WHERE id={id}")
         row = cur.fetchone()
         con.close()
         if row is None:
             raise ValueError(f"ID {id} not found in {db_path}.")
-        return cls(*row)
+
+        result = cls(*row[:-1])
+        result.version = row[-1]
+        return result
+
+    def add_samples(self, nb_versions: int, sample_dir="data/samples", db_path='data/landscape-analysis.db'):
+        os.makedirs(sample_dir, exist_ok=True)
+           
+        min_version = self.get_nb_versions(db_path)
         
-    def read_samples(self, sample_dir="data/samples", db_path='data/landscape-analysis.db'):
+        filename_list = []
+        sample_list = []
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        for version in range(min_version, min_version + nb_versions):                 
+            # Create sample
+            sample = create_initial_sample(self.dim, 
+                                        n=self.nb_sample, 
+                                        lower_bound=self.lower_bound, 
+                                        upper_bound=self.upper_bound, 
+                                        sample_type=self.method,
+                                        seed=10000000 + (version * 99991) % 2**31)
+            sample_list.append(sample)
+            
+            # name the file
+            filename = f"{uuid.uuid4().hex}.npy"
+            filename_list.append(filename)
+            
+            # Insert the new sample configuration into the database
+            cur.execute("""
+                INSERT INTO samples (dim, nb_sample, method, lower_bound, upper_bound, version, filename) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (self.dim, self.nb_sample, self.method, self.lower_bound, self.upper_bound, version, filename))
+            print(f"Added sample {filename} with version {version} to {self}.")
+            
+        con.commit()
+        con.close()
+        
+        # save after closing the database connection 
+        for filename, sample in zip(filename_list, sample_list):
+            filepath = os.path.join(sample_dir, filename)
+            np.save(filepath, sample)
+
+    def read_sample(self, sample_dir="data/samples", db_path='data/landscape-analysis.db'):
+        if not hasattr(self, 'version'):
+            raise AttributeError("version is not set. Use lookup_by_id() or manually set it.")
+        
         con = sqlite3.connect(db_path)
         cur = con.cursor()
         
         # Check if the sample configuration exists in the database
         cur.execute(f"""
             SELECT filename FROM samples 
-            WHERE dim = {self.dim} AND nb_sample = {self.nb_sample} AND method = '{self.method}' 
-            AND lower_bound = {self.lower_bound} AND upper_bound = {self.upper_bound}
-        """)
+            WHERE dim = ? AND nb_sample = ? AND method = ? 
+            AND lower_bound = ? AND upper_bound = ? AND version = ?
+        """, (self.dim, self.nb_sample, self.method, self.lower_bound, self.upper_bound, self.version))
         
         row = cur.fetchone()
         con.close()
         
         if row is None:
-            raise ValueError("No dataset found with the specified parameters.")
+            raise ValueError(f"No sample found with {self}.")
         
         filename = row[0]
         filepath = os.path.join(sample_dir, filename)
@@ -111,59 +341,47 @@ class ParameterSampleConfig:
         data = np.load(filepath)
         return data
 
-def add_samples(sample_config: ParameterSampleConfig, nb_versions=30, sample_dir="data/samples", db_path='data/landscape-analysis.db'):
-    os.makedirs(sample_dir, exist_ok=True)
-    
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    
-    # Check if the sample configuration already exists in the database
-    cur.execute(f"""
-        SELECT version FROM samples 
-        WHERE dim = {sample_config.dim} AND nb_sample = {sample_config.nb_sample} 
-        AND method = '{sample_config.method}' AND lower_bound = {sample_config.lower_bound} 
-        AND upper_bound = {sample_config.upper_bound}
-    """)
-    existing_versions = cur.fetchall()
-    min_version = 0 if existing_versions is None else int(np.max(existing_versions)) + 1
-    
-    filename_list = []
-    sample_list = []
-    for version in range(min_version, min_version + nb_versions):                 
-        # Create sample
-        sample = create_initial_sample(sample_config.dim, 
-                                       n=sample_config.nb_sample, 
-                                       lower_bound=sample_config.lower_bound, 
-                                       upper_bound=sample_config.upper_bound, 
-                                       sample_type=sample_config.method,
-                                       seed=version)
-        sample_list.append(sample)
+    def get_nb_versions(self, db_path='data/landscape-analysis.db'):
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
         
-        # name the file
-        filename = f"{uuid.uuid4().hex}.npy"
-        filename_list.append(filename)
-        
-        # Insert the new sample configuration into the database
         cur.execute(f"""
-            INSERT INTO samples (dim, nb_sample, method, lower_bound, upper_bound, version, filename) 
-            VALUES ({sample_config.dim}, {sample_config.nb_sample}, '{sample_config.method}', 
-            {sample_config.lower_bound}, {sample_config.upper_bound}, {version}, '{filename}')
+            SELECT version FROM samples 
+            WHERE dim = {self.dim} AND nb_sample = {self.nb_sample} 
+            AND method = '{self.method}' AND lower_bound = {self.lower_bound} 
+            AND upper_bound = {self.upper_bound}
         """)
-    
-    con.commit()
-    con.close()
-    
-    # save after closing the database connection 
-    for filename, sample in zip(filename_list, sample_list):
-        filepath = os.path.join(sample_dir, filename)
-        np.save(filepath, sample)
-    
+        
+        nb_versions = len(cur.fetchall())
+        con.close()
+        return nb_versions
+
+    def get_id(self, version: int, db_path='data/landscape-analysis.db'):
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Check if the sample configuration exists in the database
+        cur.execute(f"""
+            SELECT id FROM samples 
+            WHERE dim = ? AND nb_sample = ? AND method = ? 
+            AND lower_bound = ? AND upper_bound = ? AND version = ?
+        """, (self.dim, self.nb_sample, self.method, self.lower_bound, self.upper_bound, version))
+        
+        row = cur.fetchone()
+        con.close()
+        
+        if row is None:
+            raise ValueError(f"No sample found with {self} and version {version}.")
+        
+        return row[0]
+
 #################################### Match problem and sample ####################################
 import os, sqlite3, numpy as np
 from dataclasses import dataclass
 
 @dataclass
 class LossSurfaceConfig:
+    problem_type: str
     problem_id: int
     sample_id: int
 
@@ -171,32 +389,39 @@ class LossSurfaceConfig:
     def lookup_by_id(cls, id: int, db_path="data/landscape-analysis.db"):
         con = sqlite3.connect(db_path)
         cur = con.cursor()
-        cur.execute("SELECT problem_id, sample_id FROM loss_surfaces WHERE id=?", (id,))
+        cur.execute("SELECT problem_type, problem_id, sample_id FROM loss_surfaces WHERE id=?", (id,))
         row = cur.fetchone()
         con.close()
         if row is None:
             raise ValueError(f"ID {id} not found in {db_path}.")
         return cls(*row)
 
-    def read_sample(self, sample_dir="data/samples", db_path="data/landscape-analysis.db"):
+    def write_to_db(self, db_path="data/landscape-analysis.db"):
+        """
+        Write this loss surface configuration to the database.
+        """
         con = sqlite3.connect(db_path)
         cur = con.cursor()
         
-        cur.execute(f"""
-            SELECT samples.filename FROM samples 
-            INNER JOIN loss_surfaces ON samples.id=loss_surfaces.sample_id
-            WHERE loss_surfaces.problem_id={self.problem_id} AND loss_surfaces.sample_id={self.sample_id}
-            """)
+        # Insert the new loss surface configuration into the database
+        try:
+            cur.execute("""
+                INSERT INTO loss_surfaces (problem_type, problem_id, sample_id) 
+                VALUES (?, ?, ?)
+            """, (self.problem_type, self.problem_id, self.sample_id))
+        except sqlite3.IntegrityError:
+            con.close()
+            print(f"Loss surface {self} already exists in the database.")
+            raise
         
-        filename = cur.fetchone()
-        if filename is None:
-            raise ValueError(f"No sample found for problem_id {self.problem_id} and sample_id {self.sample_id}.")
-        filename = filename[0]
-        
+        con.commit()
         con.close()
-        sample = np.load(os.path.join(sample_dir, filename))
-        return sample
-    
+        print(f"Added loss surface {self} to the loss_surfaces.")
+
+    def read_sample(self, sample_dir="data/samples", db_path="data/landscape-analysis.db"):
+        sample_config = ParameterSampleConfig.lookup_by_id(self.sample_id, db_path)
+        return sample_config.read_sample(sample_dir, db_path)
+
     def read_loss(self, loss_dir="data/losses", db_path="data/landscape-analysis.db"):
         """
         Read the loss associated with this loss surface configuration using the database.
@@ -206,9 +431,9 @@ class LossSurfaceConfig:
         
         cur.execute(f"""
             SELECT loss_filename FROM loss_surfaces 
-            WHERE problem_id={self.problem_id} AND sample_id={self.sample_id}
-        """)
-        
+            WHERE problem_type=? AND problem_id=? AND sample_id=?
+        """, (self.problem_type, self.problem_id, self.sample_id))
+
         row = cur.fetchone()
         con.close()
         
@@ -225,53 +450,53 @@ class LossSurfaceConfig:
         con = sqlite3.connect(db_path)
         cur = con.cursor()
         
+        # Check if the loss surface configuration exists in the database
+        cur.execute(f"""
+            SELECT loss_filename FROM loss_surfaces 
+            WHERE problem_type = ? AND problem_id = ? AND sample_id = ?
+        """, (self.problem_type, self.problem_id, self.sample_id))
+        existing_filename = cur.fetchone()[0]
+        if existing_filename is not None and existing_filename != 'pending':
+            con.close()
+            raise ValueError(f"Loss surface {self} already has a loss filename in the database.")
+
+        # Update the loss filename in the database
         cur.execute(f"""
             UPDATE loss_surfaces 
-            SET loss_filename = '{loss_filename}' 
-            WHERE problem_id = {self.problem_id} AND sample_id = {self.sample_id}
-        """)
-        
+            SET loss_filename = ? 
+            WHERE problem_type = ? AND problem_id = ? AND sample_id = ?
+        """, (loss_filename, self.problem_type, self.problem_id, self.sample_id))
+
+
         con.commit()
         con.close()
 
-def assign_samples_to_problem(problem_id: int, sample_config: ParameterSampleConfig, nb_versions=None, sample_dir="data/samples", db_path="data/landscape-analysis.db"):    
-    # Connect to the database
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
+    def get_problem_config(self, db_path="data/landscape-analysis.db"):
+        if self.problem_type == 'nn':
+            result = NNProblemConfig.lookup_by_id(self.problem_id, db_path)
+        elif self.problem_type == 'bbob':
+            result = BBOBProblemConfig.lookup_by_id(self.problem_id, db_path)
+        else:
+            raise ValueError(f"Unknown problem type: {self.problem_type}")
 
-    # Find all the samples which match the sample_config
-    cur.execute(f"""
-        SELECT samples.id FROM samples 
-        WHERE dim = {sample_config.dim} AND nb_sample = {sample_config.nb_sample} 
-        AND method = '{sample_config.method}' AND lower_bound = {sample_config.lower_bound} 
-        AND upper_bound = {sample_config.upper_bound}
-        AND samples.id NOT IN (SELECT sample_id FROM loss_surfaces WHERE problem_id = {problem_id})
-    """)
-    sample_ids = [row[0] for row in cur.fetchall()]
+        return result
+
+def assign_samples_to_problem(problem_config, sample_config: ParameterSampleConfig, up_to_nb_versions: int, sample_dir = 'data/samples', db_path='data/landscape-analysis.db'):
+    problem_id = problem_config.get_id(db_path) # raise: ValueError if not found
+    problem_type = problem_config.get_type()
     
-    # Make sure the samples exist
-    if len(sample_ids) == 0:
-        con.close()
-        raise ValueError(f"No unassigned samples found matching the config {sample_config}. Please generate samples first.")
-
-    # Add the matched samples, along with problem_id, to the loss_surfaces table
-
-    # Insert new rows into the loss_surfaces table
-    new_rows = [(problem_id, sample_id) for sample_id in sample_ids]
-    cur.executemany("""
-        INSERT INTO loss_surfaces (problem_id, sample_id) 
-        VALUES (?, ?)
-    """, new_rows)
+    # make sure enough samples are in samples table
+    nb_versions_in_samples = sample_config.get_nb_versions(db_path)    
+    if nb_versions_in_samples < up_to_nb_versions:
+        sample_config.add_samples(up_to_nb_versions - nb_versions_in_samples, sample_dir, db_path)
     
-    # print total number of rows inserted, and current number of rows for the problem
-    cur.execute(f"SELECT COUNT(*) FROM loss_surfaces WHERE problem_id = {problem_id}")
-    total_samples = cur.fetchone()[0]
-    print(f"Problem {problem_id}: Assigned {len(new_rows)} samples. Total samples: {total_samples}")
-
-    # Commit and close the connection
-    con.commit()
-    con.close()
-    
+    for version in range(up_to_nb_versions):
+        sample_id = sample_config.get_id(version, db_path)
+        try:
+            LossSurfaceConfig(problem_type, problem_id, sample_id).write_to_db(db_path)
+        except sqlite3.IntegrityError:
+            print(f"Loss surface for problem {problem_id} with sample {sample_id} already exists in the database.")
+            continue  
 ################################### Calculate Loss ###################################
 import os, uuid, sqlite3
 import numpy as np
@@ -286,39 +511,32 @@ def calculate_and_save_loss(loss_surface_id: int,
                             loss_dir='data/losses',
                             db_path='data/landscape-analysis.db',
                             device='cuda'):
-    loss_surface = LossSurfaceConfig.lookup_by_id(loss_surface_id, db_path)
-    problem = RandmanProblemConfig.lookup_by_id(loss_surface.problem_id, db_path)
-    randman = RandmanConfig.lookup_by_id(problem.randman_id, os.path.join(randman_dir, "meta-data.csv"))
+    loss_surface_config = LossSurfaceConfig.lookup_by_id(loss_surface_id, db_path)
+    problem_config = loss_surface_config.get_problem_config(db_path)
+    f = problem_config.get_loss_surface_fn(db_path, os.path.join(randman_dir, 'meta-data.csv'), device)
+    samples = loss_surface_config.read_sample(sample_dir, db_path)
 
-    # Prepare data and model
-    train_loader, _ = split_and_load(randman.read_dataset(randman_dir), batch_size=516)
-    model = RandmanSNN(randman.nb_units, problem.nb_hidden, randman.nb_classes, learn_beta=False, beta=0.95)
-    if problem.loss_fn == 'cross_entropy':
-        loss_fn = cross_entropy
-    f = get_parameter_to_loss_fn(train_loader, model, loss_fn, device)
-    samples = loss_surface.read_sample(sample_dir, db_path)
-    
     # The computation part
     print(f"calculating loss for loss_surface_id {loss_surface_id} with {len(samples)} samples")
     loss = np.apply_along_axis(f, 1, samples)
 
     # Save loss to the database
     loss_filename = f"{uuid.uuid4().hex}.npy"
-    loss_surface.write_loss_filename(loss_filename, db_path)
+    loss_surface_config.write_loss_filename(loss_filename, db_path)
 
     # Save loss to file
     os.makedirs(loss_dir, exist_ok=True)
     np.save(os.path.join(loss_dir, loss_filename), loss)
 
 def get_next_available_id(column_name, db_path='data/landscape-analysis.db'):
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, timeout=30)
     cur = con.cursor()
     
     # Aquire writer lock
     cur.execute("BEGIN EXCLUSIVE")
     
     # Check if the column exists in the loss_surfaces table
-    cur.execute(f"PRAGMA table_info(loss_surfaces)")
+    cur.execute("PRAGMA table_info(loss_surfaces)")
     columns = [row[1] for row in cur.fetchall()]
     if column_name not in columns:
         cur.execute(f"ALTER TABLE loss_surfaces ADD COLUMN {column_name} REAL")
@@ -330,7 +548,7 @@ def get_next_available_id(column_name, db_path='data/landscape-analysis.db'):
             SELECT MIN(id) FROM loss_surfaces
             WHERE {column_name} IS NULL
             """)
-    # if working on features, loss_filename should not be NULL or pending
+    # if working on features, then loss_filename should not be NULL or pending
     else:
         cur.execute(f"""
             SELECT MIN(id) FROM loss_surfaces
@@ -377,7 +595,7 @@ def calculate_and_save_features(loss_surface_id: int, sample_to_feature: Callabl
     
     # Save the features to loss-surfaces.csv
     # Connect to the SQLite database
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, timeout=30)
     cur = con.cursor()
     
     # aquire write lock
