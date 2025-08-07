@@ -49,7 +49,6 @@ singularity exec --nv \
         export HOME=/scratch/wx2178
         export PATH=\$HOME/.local/bin:\$PATH
         export PYTHONUNBUFFERED=1
-        export WANDB_API_KEY=624747d405596915090d3160f109335907281de4
         export WANDB_DIR=$WANDB_DIR
         export WANDB_CACHE_DIR=$WANDB_CACHE_DIR
         export WANDB_ARTIFACT_DIR=$WANDB_ARTIFACT_DIR
