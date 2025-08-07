@@ -2,15 +2,15 @@
 #SBATCH --job-name=darwin_sweep
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=20GB
-#SBATCH --time=24:00:00
-#SBATCH --gres=gpu:1
+#SBATCH --mem=24GB
+#SBATCH --time=35:00:00
+#SBATCH --gres=gpu:0
 #SBATCH --account=pr_60_tandon_advanced
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 
 # === Command ===
-# sbatch --array=0-9 /scratch/wx2178/SNN/DarwinNeuron/DarwinNeuron_hpc.SBATCH
+# sbatch --array=0-70 /scratch/wx2178/SNN/DarwinNeuron_New/DarwinNeuron_hpc.SBATCH
 
 # === Mode ===
 # MODE="offline"
@@ -49,7 +49,7 @@ singularity exec --nv \
         export HOME=/scratch/wx2178
         export PATH=\$HOME/.local/bin:\$PATH
         export PYTHONUNBUFFERED=1
-        export WANDB_API_KEY=
+        export WANDB_API_KEY=624747d405596915090d3160f109335907281de4
         export WANDB_DIR=$WANDB_DIR
         export WANDB_CACHE_DIR=$WANDB_CACHE_DIR
         export WANDB_ARTIFACT_DIR=$WANDB_ARTIFACT_DIR
@@ -60,10 +60,10 @@ singularity exec --nv \
         fi
 
         echo '=== Run Sweep ==='
-        cd /scratch/wx2178/SNN/DarwinNeuron
+        cd /scratch/wx2178/SNN/DarwinNeuron_New
         python sweep_on_HPC.py
 
-        # if offline：sync runs
+        # if offline: sync runs
         if [ \"$MODE\" = \"offline\" ]; then
             echo '=== Syncing offline logs ==='
             for d in $WANDB_DIR/offline-run-*; do
