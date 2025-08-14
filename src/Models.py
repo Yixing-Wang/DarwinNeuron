@@ -1,29 +1,116 @@
+import torch, sqlite3
+import snntorch as snn
+import torch.nn as nn
+from torch.nn.functional import cross_entropy
+from torch.nn.utils import parameters_to_vector
+from dataclasses import dataclass
+
+@dataclass
+class RandmanSNNConfig:
+    nb_hidden_1: int
+    nb_hidden_2: int
+    beta: float
+    learn_beta: bool
+    recurrent: bool    
+    parameter_type: str # "weights"
+    
+    @classmethod
+    def lookup_by_id(cls, id, db_path='data/landscape-analysis.db'):
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()             
+        cursor.execute(f"SELECT nb_hidden_1, nb_hidden_2, beta, learn_beta, recurrent, parameter_type FROM snn_models WHERE id={id}")
+        row = list(cursor.fetchone())
+        conn.close()
+        
+        if row is None:
+            raise ValueError(f"No RandmanSNN configuration found with id {id}")
+        
+        # convert int to bool
+        row[3] = bool(row[3]) # learn_beta
+        row[4] = bool(row[4]) # recurrent
+
+        return cls(*row)
+    
+    def write_to_db(self, db_path='data/landscape-analysis.db'):
+        if self.nb_hidden_2 is None or (self.nb_hidden_2 < 1 and self.nb_hidden_2 != -1):
+            self.nb_hidden_2 = -1
+            print(f"Warning: nb_hidden_2 is set to {self.nb_hidden_2}. This is not a valid value for SNN models. It will be set to -1.")
+            
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Insert the new configuration into the database
+        try:
+            cur.execute(
+                """INSERT INTO snn_models (nb_hidden_1, nb_hidden_2, beta, learn_beta, recurrent, parameter_type)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    self.nb_hidden_1,
+                    self.nb_hidden_2,
+                    self.beta,
+                    int(self.learn_beta),
+                    int(self.recurrent),
+                    self.parameter_type
+                )
+            )
+        except sqlite3.IntegrityError:
+            print(f"Configuration {self} already exists in the database.")
+        con.commit()
+        con.close()
+    
+    def get_id(self, db_path='data/landscape-analysis.db'):
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Get the id of the configuration
+        cur.execute(
+            """SELECT id FROM snn_models WHERE nb_hidden_1=? AND nb_hidden_2=? AND beta=? AND learn_beta=? AND recurrent=? AND parameter_type=?""",
+            (self.nb_hidden_1, self.nb_hidden_2 , self.beta, int(self.learn_beta), int(self.recurrent), self.parameter_type)
+        )
+        
+        row = cur.fetchone()
+        con.close()
+        
+        if row is None:
+            raise ValueError(f"Configuration {self} not found in the database. Notice that -1 is used to indicate no 2nd hidden layer.")
+
+        return row[0]
+
 import torch
 import snntorch as snn
 import torch.nn as nn
 from torch.nn.functional import cross_entropy
-from functools import partial
 from snntorch import surrogate
 from torch.nn.utils import parameters_to_vector
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = 'cuda'
 
 class RandmanSNN(nn.Module):
-    def __init__(self, num_inputs, num_hidden, num_outputs, learn_beta, beta=0.95, spike_grad=None, recurrent=False):
+    def __init__(self, num_inputs, num_outputs, snn_config: RandmanSNNConfig, spike_grad=None):
         super(RandmanSNN, self).__init__()
-        self.recurrent = recurrent
+        self.recurrent = snn_config.recurrent
         # If no spike_grad specified, use default
         if spike_grad is None:
             spike_grad = surrogate.fast_sigmoid(slope=25)
 
-        self.fc1 = nn.Linear(num_inputs, num_hidden, bias=False)
+        # 1st hidden layer
+        self.fc1 = nn.Linear(num_inputs, snn_config.nb_hidden_1, bias=False)
         if self.recurrent:
-            self.fc1_rec = nn.Linear(num_hidden, num_hidden, bias=False)
+            self.fc1_rec = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False)
+        self.lif1 = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad)
 
-        self.lif1 = snn.Leaky(beta=beta, learn_beta=learn_beta, spike_grad=spike_grad)
-        
-        self.fc2 = nn.Linear(num_hidden, num_outputs, bias= False)
-        self.lif2 = snn.Leaky(beta=beta, learn_beta=learn_beta, spike_grad=spike_grad, reset_mechanism='none')
+        # 2nd hidden layer (optional)
+        if snn_config.nb_hidden_2 < 1 and snn_config.nb_hidden_2 != -1:
+            raise ValueError(f"Invalid value for nb_hidden_2: {snn_config.nb_hidden_2}. It should be -1 or a positive integer.")
+        if snn_config.nb_hidden_2 != -1:
+            self.fc2 = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False)
+            if self.recurrent:
+                self.fc2_rec = nn.Linear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False)
+            self.lif2 = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad)
+
+        # Output layer
+        self.fc_out = nn.Linear(snn_config.nb_hidden_1 if snn_config.nb_hidden_2 != -1 else snn_config.nb_hidden_2, num_outputs, bias= False)
+        self.lif_out = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad, reset_mechanism='none')
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -35,33 +122,44 @@ class RandmanSNN(nn.Module):
         batch_size, time_steps, num_neurons = x.shape
         x = x.permute(1, 0, 2)  # (time, batch, neurons)
 
-        mem1, mem2 = [torch.zeros(batch_size, layer.out_features, device=x.device)
-                      for layer in [self.fc1, self.fc2]]
+        ## Initialize membrane potentials and spikes
+        self.mem1_rec = [torch.zeros(batch_size, self.fc1.out_features, device=x.device),]
+        self.spk1_rec = [torch.zeros(batch_size, self.fc1.weight.shape[0], device=x.device),]
+        if hasattr(self, 'fc2'):
+            self.mem2_rec = [torch.zeros(batch_size, self.fc2.out_features, device=x.device),]
+            self.spk2_rec = [torch.zeros(batch_size, self.fc2.weight.shape[0], device=x.device),]
+        self.mem_out_rec = [torch.zeros(batch_size, self.fc_out.out_features, device=x.device),]
 
-        spk1_rec = []
-        mem2_rec = []
-
-        spk1=torch.zeros([self.fc1.weight.shape[0],]).to(device)
         for t in range(time_steps):
+            # First hidden layer
+            input_1 = self.fc1(x[t])
             if self.recurrent:
-                spk1, mem1 = self.lif1(self.fc1(x[t]) + self.fc1_rec(spk1), mem1)
-            else:
-                spk1, mem1 = self.lif1(self.fc1(x[t]), mem1)
-            _, mem2 = self.lif2(self.fc2(spk1), mem2)
+                input_1 += self.fc1_rec(self.spk1_rec[-1])
+            spk1, mem1 = self.lif1(input_1, self.mem1_rec[-1])
+            self.spk1_rec.append(spk1)
+            self.mem1_rec.append(mem1)
             
-            spk1_rec.append(spk1)
-            mem2_rec.append(mem2)
+            # Second hidden layer if it exists
+            if hasattr(self, 'fc2'):
+                input_2 = self.fc2(spk1)
+                if self.recurrent:
+                    input_2 += self.fc2_rec(self.spk2_rec[-1])
+                spk2, mem2 = self.lif2(input_2, self.mem2_rec[-1])
+                self.spk2_rec.append(spk2)
+                self.mem2_rec.append(mem2)
 
-        #print("mem2[-1].requires_grad =", mem2[-1].requires_grad)
+            # Output layer
+            _, mem_out = self.lif_out(self.fc_out(spk2 if hasattr(self, 'fc2') else spk1), self.mem_out_rec[-1])          
+            self.mem_out_rec.append(mem_out)
 
         # Each stacked item has shape [time_steps, batch_size, num_neurons]
-        return torch.stack(spk1_rec, dim=0), torch.stack(mem2_rec, dim=0)
+        # Including the first tensor kills the learning in SGD, very interesting
+        return torch.stack(self.spk1_rec[1:], dim=0), torch.stack(self.mem_out_rec[1:], dim=0)
 
-def regularized_cross_entropy(pred, y):
-    # pred shape: [batch, classes (logits)]
-    regularization_term = torch.sigmoid(-15 * torch.abs(pred[:,0] - pred[:, 1]))
-    
-    return cross_entropy(pred, y) + regularization_term.mean()
+def calc_randmansnn_parameters(nb_inputs, nb_outputs, snn_config: RandmanSNNConfig):
+    model = RandmanSNN(num_inputs=nb_inputs, num_outputs=nb_outputs, snn_config=snn_config).to('cpu')
+    vector = parameters_to_vector(model.parameters())
+    return vector.size(0)
 
 def spike_regularized_cross_entropy(logits, y, spikes, lambda_reg=1e-3):
     loss_ce = cross_entropy(logits, y)
@@ -69,11 +167,12 @@ def spike_regularized_cross_entropy(logits, y, spikes, lambda_reg=1e-3):
     if torch.isnan(loss_ce) or torch.isnan(rate_loss):
         print("NaN detected in loss computation:", loss_ce.item(), rate_loss.item())
     return loss_ce + rate_loss
+
+def regularized_cross_entropy(pred, y):
+    # pred shape: [batch, classes (logits)]
+    regularization_term = torch.sigmoid(-15 * torch.abs(pred[:,0] - pred[:, 1]))
     
-def calc_randmansnn_parameters(nb_inputs, nb_hidden, nb_outputs):
-    model = RandmanSNN(num_inputs=nb_inputs, num_hidden=nb_hidden, num_outputs=nb_outputs, learn_beta=False).to('cpu')
-    vector = parameters_to_vector(model.parameters())
-    return vector.size(0)
+    return cross_entropy(pred, y) + regularization_term.mean()
 
 ## The Compeition Model
 # TODO: need to implement self.update() to keep up with the current pipline.
@@ -94,11 +193,11 @@ class ExcitationPopulation(nn.Module):
     
     def init_states(self, nb_decision_steps=None):
         # excitatory neurons
-        self.mem = self.lif.init_leaky().to(device)
-        self.last_spks_queue = [torch.zeros(self.get_nb_neurons(), device=device) for _ in range(nb_decision_steps if nb_decision_steps != None else len(self.last_spks_queue))]  
+        self.mem = self.lif.init_leaky().to(self.input_fc.weight.device)
+        self.last_spks_queue = [torch.zeros(self.get_nb_neurons(), device=self.input_fc.weight.device) for _ in range(nb_decision_steps if nb_decision_steps != None else len(self.last_spks_queue))]  
         
         # readout neuron
-        self.readout_mem = self.readout_lif.init_leaky().to(device)
+        self.readout_mem = self.readout_lif.init_leaky().to(self.input_fc.weight.device)
         self.readout_mem_rec = []
 
     def forward(self, input, inhibition):
@@ -172,13 +271,13 @@ class CompetitionModel(nn.Module):
         x = x.permute([1, 0, 2])
         
         # pad time steps for model to go to steady states
-        x = torch.cat([x, torch.zeros(5 + self.nb_decision_steps, x.shape[1], x.shape[2], device=device)])
+        x = torch.cat([x, torch.zeros(5 + self.nb_decision_steps, x.shape[1], x.shape[2], device=x.device)])
         
         # initalize membrane potentials
         self.init_states()
         
         # init spikes with shape [nb_neurons]. The batch size will be broadcasted
-        inh_spk = torch.zeros([self.get_nb_inh()], device=device)
+        inh_spk = torch.zeros([self.get_nb_inh()], device=x.device)
         
         for t in range(len(x)):          
             # excitation

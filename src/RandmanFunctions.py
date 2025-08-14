@@ -123,7 +123,7 @@ class RandmanConfig:
     alpha: float = 2.0    
     
     @classmethod
-    def lookup_by_id(cls, table_path, id: int):
+    def lookup_by_id(cls, id: int, table_path="data/randman/meta-data.csv"):
         """
         Lookup a row by id in a CSV file.
         Args:
@@ -154,7 +154,7 @@ class RandmanConfig:
         if not os.path.isfile(filepath):
             raise FileNotFoundError(f"Dataset file not found at {filepath}")
         print("filepath", filepath)
-
+        
         data = torch.load(filepath, weights_only=False)
         return data
 
