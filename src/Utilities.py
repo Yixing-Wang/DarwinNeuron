@@ -139,9 +139,10 @@ def run_snn_on_batch(model, x, y, loss_fn):
         pred_y = spike_to_label(voltages, scheme = 'highest_voltage')
         logits = voltage_to_logits(voltages, scheme='highest-voltage')
 
-        try:
+        # call loss differently if it's spike_regularized_cross_entropy from src.Models
+        if getattr(loss_fn, "__name__", "") == "spike_regularized_cross_entropy":
             loss = loss_fn(logits, y.long(), spikes)
-        except TypeError:
+        else:
             loss = loss_fn(logits, y.long())
     
     correct = (pred_y == y).sum().item()

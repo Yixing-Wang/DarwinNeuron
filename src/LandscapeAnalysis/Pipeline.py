@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 
 from src.RandmanFunctions import split_and_load
 from torch.nn.functional import cross_entropy
-from src.Models import RandmanSNNConfig, RandmanSNN, calc_randmansnn_parameters
+from src.Models import RandmanSNNConfig, RandmanSNN, calc_randmansnn_parameters, spike_regularized_cross_entropy
 from src.RandmanFunctions import RandmanConfig, generate_and_save_randman, match_config
 
 from src.LandscapeAnalysis.Utils import get_parameter_to_loss_fn
@@ -52,14 +52,16 @@ class NNProblemConfig(ELAProblemConfig):
     def lookup_by_id(cls, id: int, db_path='data/landscape-analysis.db'):
         con = sqlite3.connect(db_path)
         cur = con.cursor()
-        cur.execute(f"SELECT data_type, data_id, model_type, model_id, loss_fn FROM nn_problems WHERE id = {id}")
+        cur.execute(f"SELECT data_type, data_id, model_type, model_id, loss_fn, dim FROM nn_problems WHERE id = {id}")
         row = cur.fetchone()
         con.close()
         if row is None:
             raise ValueError(f"No NNProblemConfig found with id {id}.")
 
-        return cls(*row) 
-    
+        result = cls(*row[:-1])
+        result.dim = row[-1]  
+        return result
+
     def write_to_db(self, dim: int, db_path='data/landscape-analysis.db'):
         con = sqlite3.connect(db_path)
         cur = con.cursor()
@@ -118,12 +120,19 @@ class NNProblemConfig(ELAProblemConfig):
         return loader
 
     def get_loss_surface_fn(self, db_path='data/landscape-analysis.db', randman_table_path='data/randman/meta-data.csv', device='cuda') -> Callable:
+        # dataset
         if self.data_type == 'randman':
             loader = self.get_loader(db_path)
+            
+        # model
         if self.model_type == 'snn':
             model = self.get_model(db_path, randman_table_path)
+            
+        # loss function
         if self.loss_fn == 'cross_entropy':
             loss_fn = cross_entropy
+        elif self.loss_fn == 'spike_regularized_cross_entropy':
+            loss_fn = spike_regularized_cross_entropy # note: use default lambda 1e-3, use JASON if need other lambdas? 
         f = get_parameter_to_loss_fn(loader, model, loss_fn, device)
         return f
 
@@ -497,6 +506,7 @@ def assign_samples_to_problem(problem_config, sample_config: ParameterSampleConf
         except sqlite3.IntegrityError:
             print(f"Loss surface for problem {problem_id} with sample {sample_id} already exists in the database.")
             continue  
+        
 ################################### Calculate Loss ###################################
 import os, uuid, sqlite3
 import numpy as np

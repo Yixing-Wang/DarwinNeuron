@@ -27,3 +27,6 @@ def get_parameter_to_loss_fn(loader, model, loss, device="cuda"):
         return stats.loss.item()
 
     return parameter_to_loss_fn
+
+
+

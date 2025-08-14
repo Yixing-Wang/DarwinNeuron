@@ -109,7 +109,7 @@ class RandmanSNN(nn.Module):
             self.lif2 = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad)
 
         # Output layer
-        self.fc_out = nn.Linear(snn_config.nb_hidden_1 if snn_config.nb_hidden_2 != -1 else snn_config.nb_hidden_2, num_outputs, bias= False)
+        self.fc_out = nn.Linear(snn_config.nb_hidden_1 if snn_config.nb_hidden_2 == -1 else snn_config.nb_hidden_2, num_outputs, bias= False)
         self.lif_out = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad, reset_mechanism='none')
 
         for m in self.modules():
