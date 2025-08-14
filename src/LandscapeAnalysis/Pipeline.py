@@ -566,6 +566,8 @@ def get_next_available_id(column_name, db_path='data/landscape-analysis.db'):
             SET {column_name} = 'pending' 
             WHERE id = {id}
         """)
+    else:
+        print(f"No available ID found for column '{column_name}'.")
     
     con.commit()
     con.close()
@@ -574,6 +576,9 @@ def get_next_available_id(column_name, db_path='data/landscape-analysis.db'):
 
 ############################################ Calculate Features ############################################
 from typing import Callable
+from scipy.stats import rankdata
+from sklearn.decomposition import PCA
+
 def get_xy_by_id(loss_surface_id: int, loss_dir="data/losses", sample_dir="data/samples", db_path="data/landscape-analysis.db"):
     """
     Get the x and y values for a given loss surface ID.
@@ -583,8 +588,32 @@ def get_xy_by_id(loss_surface_id: int, loss_dir="data/losses", sample_dir="data/
     y = loss_surface_config.read_loss(loss_dir, db_path)
     return x, y  
 
-def calculate_and_save_features(loss_surface_id: int, sample_to_feature: Callable, loss_dir="data/losses", sample_dir="data/samples", db_path="data/landscape-analysis.db"):
+def scale_x(x, y):
+    x_mean = x.mean(axis=0)
+    x_centered = x - x_mean
+
+    r = rankdata(y)
+    nb_points = len(y)
+    w = np.log(nb_points) - np.log(r)
+    w /= np.sum(w)
+    return x_centered * w.reshape(-1, 1)
+
+# Tanabe 2021: https://github.com/ryojitanabe/ela_drframework/blob/main/feature_computation.py
+def tanabe_dim_reduction(x, y, dim):
+    if dim >= x.shape[1]:
+        result = np.copy(x)
+        print(f"Target dimension {dim} >= original dimension {x.shape[1]}. No reduction is performed.")
+    else:
+        x = scale_x(x, y)
+        pca = PCA(n_components=dim, svd_solver='full')
+        result = pca.fit_transform(x)
+    return result
+
+def calculate_and_save_features(loss_surface_id: int, sample_to_feature: Callable, dim_reduced:int = None, loss_dir="data/losses", sample_dir="data/samples", db_path="data/landscape-analysis.db"):
     x, y = get_xy_by_id(loss_surface_id, loss_dir, sample_dir, db_path)
+    
+    if dim_reduced is not None:
+        x = tanabe_dim_reduction(x, y, dim_reduced)
     
     # calculate features
     print(f"Calculating features for loss_surface_id {loss_surface_id} with {len(x)} samples")
@@ -592,6 +621,10 @@ def calculate_and_save_features(loss_surface_id: int, sample_to_feature: Callabl
     
     # Replace all "." in features' keys with "_"
     features = {key.replace('.', '_'): value for key, value in features.items()}
+    
+    # Prefix feature keys with dimension reduction information
+    if dim_reduced is not None:
+        features = {f"r{dim_reduced}_{key}": value for key, value in features.items()}
     
     # Save the features to loss-surfaces.csv
     # Connect to the SQLite database
@@ -619,3 +652,4 @@ def calculate_and_save_features(loss_surface_id: int, sample_to_feature: Callabl
     # Commit changes and close the connection
     con.commit()
     con.close()
+    
