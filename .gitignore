@@ -1,0 +1,11 @@
+# === Skip logs ===
+logs/
+*.log
+
+# === Skip ipynb checkpoints ===
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Python cache / misc
+__pycache__/
+*.pyc
