@@ -1,0 +1,72 @@
+[
+  {
+    "problem_id": 7,
+    "termination_id": 1,
+    "summaries": [
+      {
+        "algo": "ISRES",
+        "termination_id": 1,
+        "seeds": [
+          5,
+          6,
+          7
+        ],
+        "per_seed": [
+          {
+            "seed": 5,
+            "best_f": 0.5482291579246521,
+            "best_acc": 0.7797619047619048,
+            "epoch_acc_full": 0.72,
+            "n_evals": 29950,
+            "n_gen": 301,
+            "total_epoch": 100,
+            "algo": "ISRES",
+            "x_best_len": 362,
+            "x_best_file": "data/MethodComparisonRuns/NN_7/ISRES/seed_5/x_best_final.npy",
+            "runtime": 6302.6809911727905
+          },
+          {
+            "seed": 6,
+            "best_f": 0.5620996952056885,
+            "best_acc": 0.7559523809523809,
+            "epoch_acc_full": 0.6783333333333333,
+            "n_evals": 29950,
+            "n_gen": 301,
+            "total_epoch": 100,
+            "algo": "ISRES",
+            "x_best_len": 362,
+            "x_best_file": "data/MethodComparisonRuns/NN_7/ISRES/seed_6/x_best_final.npy",
+            "runtime": 2327.3407089710236
+          },
+          {
+            "seed": 7,
+            "best_f": 0.5830393433570862,
+            "best_acc": 0.6309523809523809,
+            "epoch_acc_full": 0.5883333333333334,
+            "n_evals": 29950,
+            "n_gen": 301,
+            "total_epoch": 100,
+            "algo": "ISRES",
+            "x_best_len": 362,
+            "x_best_file": "data/MethodComparisonRuns/NN_7/ISRES/seed_7/x_best_final.npy",
+            "runtime": 1481.2726576328278
+          }
+        ],
+        "average": {
+          "algo": "ISRES",
+          "termination_id": 1,
+          "seeds": [
+            5,
+            6,
+            7
+          ],
+          "mean_best_f": 0.564456065495809,
+          "mean_best_acc": 0.7222222222222222,
+          "mean_n_evals": 29950,
+          "mean_n_gen": 301,
+          "mean_final_epoch_acc_full": 0.6622222222222223
+        }
+      }
+    ]
+  }
+]

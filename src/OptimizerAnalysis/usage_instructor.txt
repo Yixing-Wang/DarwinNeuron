@@ -1,0 +1,98 @@
+Run db migrator (only once)
+python -m src.OptimizerAnalysis.migrate \
+  --db data/landscape-analysis.db
+
+-------------Hyperparameter Tune --------------
+python -m src.OptimizerAnalysis.run_batch_compare \
+  --db data/landscape-analysis.db \
+  --ids 0 \
+  --out data/MethodComparisonRuns/tuning \
+  --epochs 30 \
+  --batch-size 516 \
+  --tune-algo CMAES \
+  --tune-evals 80 \
+  --seed 0 \
+  --verbose
+
+python -m src.OptimizerAnalysis.run_batch_compare \
+  --db data/landscape-analysis.db \
+  --ids 0 \
+  --out data/MethodComparisonRuns/tuning \
+  --epochs 30 \
+  --batch-size 516 \
+  --tune-algo DE \
+  --tune-evals 80 \
+  --seed 0 \
+  --verbose
+
+-------------Run methods comparison [currently with CAM-ES and DE]-----------
+
+Option 1: auto-create a shared termination (n_gen = epoch * len(loader))
+python -m src.OptimizerAnalysis.run_batch_compare \
+  --db data/landscape-analysis.db \
+  --ids 0-8 \
+  --out data/MethodComparisonRuns \
+  --epochs 10 \
+  --batch-size 516 \
+  --seed 0 \
+  --verbose
+
+Option 2: reuse an existing termination row
+python -m src.OptimizerAnalysis.run_batch_compare \
+  --db data/landscape-analysis.db \
+  --ids 0-8 \
+  --out data/MethodComparisonRuns \
+  --termination-id 0 \
+  --batch-size 256 \
+  --seed 0 \
+  --verbose
+
+Option 3: reuse with created algorithm row
+python -m src.OptimizerAnalysis.run_batch_compare \
+  --db data/landscape-analysis.db \
+  --ids 0-8 \
+  --out data/MethodComparisonRuns \
+  --termination-id <TERM_ID> \
+  --algorithm-ids <ID_CMA>,<ID_DE> \
+  --batch-size 516 \
+  --seed 0 \
+  --verbose
+
+Option 4: tune hyperparameter and generate algorithm_id
+python -m src.OptimizerAnalysis.run_batch_compare \
+  --db data/landscape-analysis.db \
+  --ids 0-8 \
+  --out data/MethodComparisonRuns \
+  --epochs 30 \
+  --batch-size 516 \
+  --tune-algo CMAES \
+  --tune-evals 50 \
+  --seed 0 \
+  --verbose
+
+Option 5: Multi seeds
+python -m src.OptimizerAnalysis.run_batch_compare \
+  --db data/landscape-analysis.db \
+  --ids 0-8 \
+  --out data/MethodComparisonRuns \
+  --epochs 3 \
+  --batch-size 516 \
+  --seeds 0,1,2 \
+  --multi-run \
+  --save-history \
+  --verbose
+
+Option 6: Debug test
+python src/OptimizerAnalysis/run_batch_compare.py \
+  --db data/landscape-analysis.db \
+  --ids 0 \
+  --termination-id 1 \
+  --algorithm-ids 1 \
+  --batch-size 516 \
+  --epochs 2 \
+  --seeds 0,1 \
+  --multi-run \
+  --out data/MethodComparisonRuns_test
+
+
+

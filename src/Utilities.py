@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass, asdict
+import inspect
 
 def init_result_csv(config, project):
     """
@@ -134,25 +135,21 @@ class SNNStats:
 
 def run_snn_on_batch(model, x, y, loss_fn): 
     # shape: [time_steps, batch_size, classes]
-    with torch.no_grad(): # EA forward doesn't need gradient
-        spikes, voltages = model(x)
-        pred_y = spike_to_label(voltages, scheme = 'highest_voltage')
-        logits = voltage_to_logits(voltages, scheme='highest-voltage')
-
-        # call loss differently if it's spike_regularized_cross_entropy from src.Models
-        if getattr(loss_fn, "__name__", "") == "spike_regularized_cross_entropy":
-            loss = loss_fn(logits, y.long(), spikes)
-        else:
-            loss = loss_fn(logits, y.long())
+    spikes, voltages = model(x)
+    pred_y = spike_to_label(voltages, scheme = 'highest_voltage')
+    logits = voltage_to_logits(voltages, scheme='highest-voltage')
     
+    sig   = inspect.signature(loss_fn)
+    names = list(sig.parameters)
+    if len(names) >= 3 and names[2] == "spikes":
+        loss = loss_fn(logits, y.long(), spikes)
+    else:
+        loss = loss_fn(logits, y.long())
+
     correct = (pred_y == y).sum().item()
     spike_count_per_neuron = spikes.sum(dim=0) # dim: [batch_size, neurons]
     stats = SNNStats(loss, correct, len(y), spike_count_per_neuron)
-
-    del spikes, voltages, pred_y, logits, loss
-    gc.collect()
-    torch.cuda.empty_cache()
-    
+   
     return stats
 
 def evaluate_snn(model, dataloader, loss_fn, device):

@@ -111,10 +111,10 @@ class NNProblemConfig(ELAProblemConfig):
             raise ValueError(f"Unsupported data type {self.data_type} or model type {self.model_type}.")
         return model
 
-    def get_loader(self, db_path='data/landscape-analysis.db', randman_table_path='data/randman/meta-data.csv'):
+    def get_loader(self, batch_size=516, db_path='data/landscape-analysis.db', randman_table_path='data/randman/meta-data.csv'):
         if self.data_type == 'randman':
             data_config = RandmanConfig.lookup_by_id(self.data_id, randman_table_path)
-            loader, _ = split_and_load(data_config.read_dataset(), batch_size=516)
+            loader, _ = split_and_load(data_config.read_dataset(), batch_size=batch_size)
         else:
             raise ValueError(f"Unsupported data type {self.data_type}.")
         return loader
@@ -135,6 +135,15 @@ class NNProblemConfig(ELAProblemConfig):
             loss_fn = spike_regularized_cross_entropy # note: use default lambda 1e-3, use JASON if need other lambdas? 
         f = get_parameter_to_loss_fn(loader, model, loss_fn, device)
         return f
+
+    def get_loss(self, db_path='data/landscape-analysis.db'):
+        if self.loss_fn == 'cross_entropy':
+            loss_fn = cross_entropy
+        elif self.loss_fn == 'spike_regularized_cross_entropy':
+            loss_fn = spike_regularized_cross_entropy
+        else:
+            raise ValueError(f"Unsupported loss function {self.loss_fn}.")
+        return loss_fn
 
 def generate_randman_problem(randman_config: RandmanConfig, snn_config: RandmanSNNConfig, loss_fn = 'cross_entropy', db_path='data/landscape-analysis.db'):
     ## 1) Randman
@@ -512,7 +521,7 @@ import os, uuid, sqlite3
 import numpy as np
 from torch.nn.functional import cross_entropy
 from src.RandmanFunctions import split_and_load
-from src.LandscapeAnalysis import get_parameter_to_loss_fn
+from src.LandscapeAnalysis.Utils import get_parameter_to_loss_fn # import from src.LandscapeAnalysis.Utils to avoid location error
 from src.Models import RandmanSNN
 
 def calculate_and_save_loss(loss_surface_id: int, 
