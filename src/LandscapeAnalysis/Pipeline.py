@@ -521,7 +521,7 @@ import os, uuid, sqlite3
 import numpy as np
 from torch.nn.functional import cross_entropy
 from src.RandmanFunctions import split_and_load
-from src.LandscapeAnalysis.Utils import get_parameter_to_loss_fn # import from src.LandscapeAnalysis.Utils to avoid location error
+from src.LandscapeAnalysis.Utils import get_parameter_to_loss_fn
 from src.Models import RandmanSNN
 
 def calculate_and_save_loss(loss_surface_id: int, 

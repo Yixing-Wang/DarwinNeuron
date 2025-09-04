@@ -11,14 +11,15 @@ class RandmanSNNConfig:
     nb_hidden_2: int
     beta: float
     learn_beta: bool
+    learn_beta_per_neuron: bool
     recurrent: bool    
-    parameter_type: str # "weights"
+    learn_weights: bool
     
     @classmethod
     def lookup_by_id(cls, id, db_path='data/landscape-analysis.db'):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()             
-        cursor.execute(f"SELECT nb_hidden_1, nb_hidden_2, beta, learn_beta, recurrent, parameter_type FROM snn_models WHERE id={id}")
+        cursor.execute(f"SELECT nb_hidden_1, nb_hidden_2, beta, learn_beta, learn_beta_per_neuron, recurrent, learn_weights FROM snn_models WHERE id={id}")
         row = list(cursor.fetchone())
         conn.close()
         
@@ -27,7 +28,9 @@ class RandmanSNNConfig:
         
         # convert int to bool
         row[3] = bool(row[3]) # learn_beta
-        row[4] = bool(row[4]) # recurrent
+        row[4] = bool(row[4]) # learn_beta_per_neuron
+        row[5] = bool(row[5]) # recurrent
+        row[6] = bool(row[6]) # learn_weights
 
         return cls(*row)
     
@@ -42,15 +45,16 @@ class RandmanSNNConfig:
         # Insert the new configuration into the database
         try:
             cur.execute(
-                """INSERT INTO snn_models (nb_hidden_1, nb_hidden_2, beta, learn_beta, recurrent, parameter_type)
-                VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO snn_models (nb_hidden_1, nb_hidden_2, beta, learn_beta, learn_beta_per_neuron, recurrent, learn_weights)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     self.nb_hidden_1,
                     self.nb_hidden_2,
                     self.beta,
                     int(self.learn_beta),
+                    int(self.learn_beta_per_neuron),
                     int(self.recurrent),
-                    self.parameter_type
+                    int(self.learn_weights)
                 )
             )
         except sqlite3.IntegrityError:
@@ -64,8 +68,8 @@ class RandmanSNNConfig:
         
         # Get the id of the configuration
         cur.execute(
-            """SELECT id FROM snn_models WHERE nb_hidden_1=? AND nb_hidden_2=? AND beta=? AND learn_beta=? AND recurrent=? AND parameter_type=?""",
-            (self.nb_hidden_1, self.nb_hidden_2 , self.beta, int(self.learn_beta), int(self.recurrent), self.parameter_type)
+            """SELECT id FROM snn_models WHERE nb_hidden_1=? AND nb_hidden_2=? AND beta=? AND learn_beta=? AND learn_beta_per_neuron=? AND recurrent=? AND learn_weights=?""",
+            (self.nb_hidden_1, self.nb_hidden_2, self.beta, int(self.learn_beta), int(self.learn_beta_per_neuron), int(self.recurrent), int(self.learn_weights))
         )
         
         row = cur.fetchone()
@@ -85,6 +89,30 @@ from torch.nn.utils import parameters_to_vector
 
 device = 'cuda'
 
+class FrozenLinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        # init records
+        self.in_features = in_features
+        self.out_features = out_features
+        
+        # init weights
+        w = torch.empty(out_features, in_features)
+        nn.init.kaiming_uniform_(w)
+        self.register_buffer("weight", w)
+
+        if bias:
+            bound = 1 / in_features**0.5
+            b = torch.empty(out_features).uniform_(-bound, bound)
+
+            self.register_buffer("bias", b)
+
+    def forward(self, x):
+        out = x @ self.weight.T
+        if hasattr(self, "bias"):
+            out += self.bias
+        return out
+
 class RandmanSNN(nn.Module):
     def __init__(self, num_inputs, num_outputs, snn_config: RandmanSNNConfig, spike_grad=None):
         super(RandmanSNN, self).__init__()
@@ -94,23 +122,37 @@ class RandmanSNN(nn.Module):
             spike_grad = surrogate.fast_sigmoid(slope=25)
 
         # 1st hidden layer
-        self.fc1 = nn.Linear(num_inputs, snn_config.nb_hidden_1, bias=False)
+        self.fc1 = nn.Linear(num_inputs, snn_config.nb_hidden_1, bias=False) if snn_config.learn_weights else FrozenLinear(num_inputs, snn_config.nb_hidden_1, bias=False)
+        # add recurrent layer if needed
         if self.recurrent:
-            self.fc1_rec = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False)
-        self.lif1 = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad)
+            self.fc1_rec = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False) if snn_config.learn_weights else FrozenLinear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False)
+        # add LIF layer
+        self.lif1 = snn.Leaky(
+            beta=snn_config.beta * torch.ones(snn_config.nb_hidden_1) if snn_config.learn_beta_per_neuron else snn_config.beta,
+            learn_beta=snn_config.learn_beta,
+            spike_grad=spike_grad
+        )
 
         # 2nd hidden layer (optional)
         if snn_config.nb_hidden_2 < 1 and snn_config.nb_hidden_2 != -1:
             raise ValueError(f"Invalid value for nb_hidden_2: {snn_config.nb_hidden_2}. It should be -1 or a positive integer.")
+        # 2nd hidden layer
         if snn_config.nb_hidden_2 != -1:
-            self.fc2 = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False)
+            self.fc2 = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False) if snn_config.learn_weights else FrozenLinear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False)
+            # recurrent layer
             if self.recurrent:
-                self.fc2_rec = nn.Linear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False)
-            self.lif2 = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad)
+                self.fc2_rec = nn.Linear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False) if snn_config.learn_weights else FrozenLinear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False)
+            # LIF layer
+            self.lif2 = snn.Leaky(
+            beta=snn_config.beta * torch.ones(snn_config.nb_hidden_2) if snn_config.learn_beta_per_neuron else snn_config.beta,
+            learn_beta=snn_config.learn_beta,
+            spike_grad=spike_grad
+            )
 
         # Output layer
-        self.fc_out = nn.Linear(snn_config.nb_hidden_1 if snn_config.nb_hidden_2 == -1 else snn_config.nb_hidden_2, num_outputs, bias= False)
-        self.lif_out = snn.Leaky(beta=snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad, reset_mechanism='none')
+        fc_out_input_size = snn_config.nb_hidden_1 if snn_config.nb_hidden_2 == -1 else snn_config.nb_hidden_2
+        self.fc_out = nn.Linear(fc_out_input_size, num_outputs, bias= False) if snn_config.learn_weights else FrozenLinear(fc_out_input_size, num_outputs, bias= False)
+        self.lif_out = snn.Leaky(beta=snn_config.beta * torch.ones(num_outputs) if snn_config.learn_beta_per_neuron else snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad, reset_mechanism='none')
 
         for m in self.modules():
             if isinstance(m, nn.Linear):

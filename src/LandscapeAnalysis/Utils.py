@@ -18,7 +18,7 @@ def get_parameter_to_loss_fn(loader, model, loss, device="cuda"):
     Returns:
         function: A function that takes a parameter vector and returns the computed loss.
     """
-    model = deepcopy(model)
+    model = deepcopy(model).to(device)
 
     def parameter_to_loss_fn(vector):
         vector = torch.tensor(vector, dtype=torch.float32, device=device)
