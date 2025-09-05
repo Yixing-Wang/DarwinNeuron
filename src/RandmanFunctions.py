@@ -136,9 +136,29 @@ class RandmanConfig:
         if id not in df.index:
             raise ValueError(f"ID {id} not found in {table_path}.")
         kwargs = df.loc[id].to_dict()
-        kwargs.pop("filename")
-        return cls(**kwargs)
-    
+        filename = kwargs.pop("filename")
+
+        result = cls(**kwargs)
+        result.filename = filename
+        return result
+
+    @classmethod
+    def delete_by_id(cls, id: int, table_path="data/randman/meta-data.csv"):
+        df = pd.read_csv(table_path, index_col="id")
+        if id in df.index:
+            # remove the corresponding dataset file
+            filename = df.loc[id]["filename"]
+            filepath = os.path.join(os.path.dirname(table_path), filename)
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+                print(f"Deleted dataset file: {filepath}")
+            else:
+                print(f"Dataset file not found: {filepath}, but will still remove the entry from CSV.")
+            df = df.drop(index=id)
+            df.to_csv(table_path, index=True, index_label='id')
+            print(f"Deleted entry with ID {id} from {table_path}")
+            
+        
     def read_dataset(self, save_dir="data/randman"):
         meta_path = os.path.join(save_dir, "meta-data.csv")
         if not os.path.isfile(meta_path):

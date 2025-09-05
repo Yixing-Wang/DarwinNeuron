@@ -207,6 +207,12 @@ def match_config(df: pd.DataFrame, config):
     
     param_keys = list(asdict(config).keys())
     match = df.loc[
-        (df[param_keys] == pd.Series(asdict(config))).all(axis=1)
+        df.apply(
+            lambda row: all(
+                abs(row[key] - asdict(config)[key]) < 1e-6 if key == "alpha" else row[key] == asdict(config)[key]
+                for key in param_keys
+            ),
+            axis=1
+        )
     ]
     return match
