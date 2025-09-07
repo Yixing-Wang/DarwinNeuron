@@ -122,7 +122,7 @@ class NNProblemConfig(ELAProblemConfig):
     def get_loss_surface_fn(self, db_path='data/landscape-analysis.db', randman_table_path='data/randman/meta-data.csv', device='cuda') -> Callable:
         # dataset
         if self.data_type == 'randman':
-            loader = self.get_loader(db_path)
+            loader = self.get_loader(db_path=db_path)
             
         # model
         if self.model_type == 'snn':
@@ -293,6 +293,26 @@ class ParameterSampleConfig:
         result.version = row[-1]
         return result
 
+    @classmethod
+    def delete_by_id(cls, id: int, sample_dir="data/samples", db_path='data/landscape-analysis.db'):
+        with sqlite3.connect(db_path) as con:
+            cur = con.cursor()
+            cur.execute("SELECT filename FROM samples WHERE id=?", (id,))
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"ID {id} not found in {db_path}.")
+            filename = row[0]
+            filepath = os.path.join(sample_dir, filename)
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+                print(f"Deleted sample file {filepath}.")
+            else:
+                raise FileNotFoundError(f"Sample file {filepath} not found. No change made to the database.")
+            
+            cur.execute("DELETE FROM samples WHERE id=?", (id,))
+            con.commit()
+            print(f"Deleted sample configuration with ID {id} from the database.")
+
     def add_samples(self, nb_versions: int, sample_dir="data/samples", db_path='data/landscape-analysis.db'):
         os.makedirs(sample_dir, exist_ok=True)
            
@@ -364,13 +384,13 @@ class ParameterSampleConfig:
         cur = con.cursor()
         
         cur.execute(f"""
-            SELECT version FROM samples 
-            WHERE dim = {self.dim} AND nb_sample = {self.nb_sample} 
-            AND method = '{self.method}' AND lower_bound = {self.lower_bound} 
-            AND upper_bound = {self.upper_bound}
-        """)
+            SELECT COUNT(*) FROM samples 
+            WHERE dim = ? AND nb_sample = ? 
+            AND method = ? AND lower_bound = ? 
+            AND upper_bound = ?
+        """, (self.dim, self.nb_sample, self.method, self.lower_bound, self.upper_bound))
+        nb_versions = cur.fetchone()[0]
         
-        nb_versions = len(cur.fetchall())
         con.close()
         return nb_versions
 
