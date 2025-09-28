@@ -113,7 +113,7 @@ def events_to_spike_train(data, nb_steps, nb_units):
     
     return spike_train    
 
-def _insert_delayed_steps(delayed_steps, dataset):
+def insert_delayed_steps(delayed_steps, dataset):
     x, y = dataset.tensors
     zeros = torch.zeros((x.size(0), delayed_steps, x.size(2)), dtype=x.dtype)
     x = torch.cat([x, zeros], dim=1)
@@ -184,7 +184,7 @@ class RandmanConfig:
         print("filepath", filepath)
         
         data = torch.load(filepath, weights_only=False)
-        data = _insert_delayed_steps(self.delayed_steps, data)
+        data = insert_delayed_steps(self.delayed_steps, data)
         return data
 
 def get_randman_dataset(config: RandmanConfig):
