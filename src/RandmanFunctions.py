@@ -113,6 +113,13 @@ def events_to_spike_train(data, nb_steps, nb_units):
     
     return spike_train    
 
+def _insert_delayed_steps(delayed_steps, dataset):
+    x, y = dataset.tensors
+    zeros = torch.zeros((x.size(0), delayed_steps, x.size(2)), dtype=x.dtype)
+    x = torch.cat([x, zeros], dim=1)
+    result = torch.utils.data.TensorDataset(x, y)
+    return result
+
 @dataclass
 class RandmanConfig:
     nb_classes: int = 10
@@ -121,6 +128,7 @@ class RandmanConfig:
     nb_samples: int = 1000
     dim_manifold: int = 2
     alpha: float = 2.0    
+    delayed_steps: int = 0
     
     @classmethod
     def lookup_by_id(cls, id: int, table_path="data/randman/meta-data.csv"):
@@ -176,6 +184,7 @@ class RandmanConfig:
         print("filepath", filepath)
         
         data = torch.load(filepath, weights_only=False)
+        data = _insert_delayed_steps(self.delayed_steps, data)
         return data
 
 def get_randman_dataset(config: RandmanConfig):
