@@ -10,16 +10,26 @@ class RandmanSNNConfig:
     nb_hidden_1: int
     nb_hidden_2: int
     beta: float
-    learn_beta: bool
-    learn_beta_per_neuron: bool
-    recurrent: bool    
-    learn_weights: bool
+    
+    # first hidden layer
+    learn_beta_1: bool = None
+    learn_beta_per_neuron_1: bool = None
+    recurrent: bool = None
+    learn_weights_1: bool = None
+    
+    # output layer
+    learn_beta_out: bool = None
+    learn_beta_per_neuron_out: bool = None
+    learn_weights_out: bool = None
+    
+    # low-rank approximation
+    synapse_rank: int = -1  # -1 means no low-rank, full weight matrix
     
     @classmethod
     def lookup_by_id(cls, id, db_path='data/landscape-analysis.db'):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()             
-        cursor.execute(f"SELECT nb_hidden_1, nb_hidden_2, beta, learn_beta, learn_beta_per_neuron, recurrent, learn_weights FROM snn_models WHERE id={id}")
+        cursor.execute(f"SELECT nb_hidden_1, nb_hidden_2, beta, learn_beta_1, learn_beta_per_neuron_1, recurrent, learn_weights_1, learn_beta_out, learn_beta_per_neuron_out, learn_weights_out, synapse_rank FROM snn_models WHERE id={id}")
         row = list(cursor.fetchone())
         conn.close()
         
@@ -31,10 +41,105 @@ class RandmanSNNConfig:
         row[4] = bool(row[4]) # learn_beta_per_neuron
         row[5] = bool(row[5]) # recurrent
         row[6] = bool(row[6]) # learn_weights
+        row[7] = bool(row[7]) # learn_beta_out
+        row[8] = bool(row[8]) # learn_beta_per_neuron_out
+        row[9] = bool(row[9]) # learn_weights_out
 
         return cls(*row)
     
+    @property
+    def hidden_1_train_scheme(self):
+        """
+        Train_scheme is determined by learn_beta_1, learn_beta_per_neuron_1, and learn_weights_1. 
+
+        Return:
+            'weights': only weights are learned
+            'beta-per-neuron': only beta per neuron is learned
+            'weights+beta-per-neuron': both weights and beta per neuron are learned
+        """
+        scheme = None
+        if not self.learn_weights_1 and not self.learn_beta_1:
+            scheme = 'none'
+        elif self.learn_weights_1 and not self.learn_beta_1:
+            scheme = 'weights'
+        elif not self.learn_weights_1 and self.learn_beta_1 and self.learn_beta_per_neuron_1:
+            scheme = 'beta-per-neuron'
+        elif self.learn_weights_1 and self.learn_beta_1 and self.learn_beta_per_neuron_1:
+            scheme = 'weights+beta-per-neuron'
+        else:
+            raise ValueError(f"Invalid configuration: learn_weights={self.learn_weights_1}, learn_beta={self.learn_beta_1}, learn_beta_per_neuron={self.learn_beta_per_neuron_1}. This combination is not supported.")
+        return scheme
+    
+    @hidden_1_train_scheme.setter
+    def hidden_1_train_scheme(self, scheme):
+        if scheme == 'none':
+            self.learn_weights_1 = False
+            self.learn_beta_1 = False
+            self.learn_beta_per_neuron_1 = False
+        elif scheme == 'weights':
+            self.learn_weights_1 = True
+            self.learn_beta_1 = False
+            self.learn_beta_per_neuron_1 = False
+        elif scheme == 'beta-per-neuron':
+            self.learn_weights_1 = False
+            self.learn_beta_1 = True
+            self.learn_beta_per_neuron_1 = True
+        elif scheme == 'weights+beta-per-neuron':
+            self.learn_weights_1 = True
+            self.learn_beta_1 = True
+            self.learn_beta_per_neuron_1 = True
+        else:
+            raise ValueError(f"Invalid train_scheme: {scheme}. Supported schemes are 'weights', 'beta-per-neuron', and 'weights+beta-per-neuron'.")
+        
+
+    @property
+    def out_train_scheme(self):
+        """
+        Train_scheme is determined by learn_beta_out, learn_beta_per_neuron_out, and learn_weights_out. 
+
+        Return:
+            'weights': only weights are learned
+            'beta-per-neuron': only beta per neuron is learned
+            'weights+beta-per-neuron': both weights and beta per neuron are learned
+        """
+        scheme = None
+        if not self.learn_weights_out and not self.learn_beta_out:
+            scheme = 'none'
+        elif self.learn_weights_out and not self.learn_beta_out:
+            scheme = 'weights'
+        elif not self.learn_weights_out and self.learn_beta_out and self.learn_beta_per_neuron_out:
+            scheme = 'beta-per-neuron'
+        elif self.learn_weights_out and self.learn_beta_out and self.learn_beta_per_neuron_out:
+            scheme = 'weights+beta-per-neuron'
+        else:
+            raise ValueError(f"Invalid configuration: learn_weights_out={self.learn_weights_out}, learn_beta_out={self.learn_beta_out}, learn_beta_per_neuron_out={self.learn_beta_per_neuron_out}. This combination is not supported.")
+        return scheme
+
+    @out_train_scheme.setter
+    def out_train_scheme(self, scheme):
+        if scheme == 'none':
+            self.learn_weights_out = False
+            self.learn_beta_out = False
+            self.learn_beta_per_neuron_out = False
+        elif scheme == 'weights':
+            self.learn_weights_out = True
+            self.learn_beta_out = False
+            self.learn_beta_per_neuron_out = False
+        elif scheme == 'beta-per-neuron':
+            self.learn_weights_out = False
+            self.learn_beta_out = True
+            self.learn_beta_per_neuron_out = True
+        elif scheme == 'weights+beta-per-neuron':
+            self.learn_weights_out = True
+            self.learn_beta_out = True
+            self.learn_beta_per_neuron_out = True
+        else:
+            raise ValueError(f"Invalid train_scheme: {scheme}. Supported schemes are 'weights', 'beta-per-neuron', and 'weights+beta-per-neuron'.")
+
     def write_to_db(self, db_path='data/landscape-analysis.db'):
+        if None in (self.learn_beta_1, self.learn_beta_per_neuron_1, self.recurrent, self.learn_weights_1, self.learn_beta_out, self.learn_weights_out, self.learn_beta_per_neuron_out, self.synapse_rank):
+            raise ValueError("All boolean fields (learn_beta, learn_beta_per_neuron, recurrent, learn_weights, learn_beta_out, learn_weights_out, learn_beta_per_neuron_out, synapse_rank) must be set before writing to the database.")
+
         if self.nb_hidden_2 is None or (self.nb_hidden_2 < 1 and self.nb_hidden_2 != -1):
             self.nb_hidden_2 = -1
             print(f"Warning: nb_hidden_2 is set to {self.nb_hidden_2}. This is not a valid value for SNN models. It will be set to -1.")
@@ -45,16 +150,20 @@ class RandmanSNNConfig:
         # Insert the new configuration into the database
         try:
             cur.execute(
-                """INSERT INTO snn_models (nb_hidden_1, nb_hidden_2, beta, learn_beta, learn_beta_per_neuron, recurrent, learn_weights)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO snn_models (nb_hidden_1, nb_hidden_2, beta, learn_beta_1, learn_beta_per_neuron_1, recurrent, learn_weights_1, learn_beta_out, learn_weights_out, learn_beta_per_neuron_out, synapse_rank)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     self.nb_hidden_1,
                     self.nb_hidden_2,
                     self.beta,
-                    int(self.learn_beta),
-                    int(self.learn_beta_per_neuron),
+                    int(self.learn_beta_1),
+                    int(self.learn_beta_per_neuron_1),
                     int(self.recurrent),
-                    int(self.learn_weights)
+                    int(self.learn_weights_1),
+                    int(self.learn_beta_out),
+                    int(self.learn_weights_out),
+                    int(self.learn_beta_per_neuron_out),
+                    self.synapse_rank
                 )
             )
         except sqlite3.IntegrityError:
@@ -68,8 +177,8 @@ class RandmanSNNConfig:
         
         # Get the id of the configuration
         cur.execute(
-            """SELECT id FROM snn_models WHERE nb_hidden_1=? AND nb_hidden_2=? AND beta=? AND learn_beta=? AND learn_beta_per_neuron=? AND recurrent=? AND learn_weights=?""",
-            (self.nb_hidden_1, self.nb_hidden_2, self.beta, int(self.learn_beta), int(self.learn_beta_per_neuron), int(self.recurrent), int(self.learn_weights))
+            """SELECT id FROM snn_models WHERE nb_hidden_1=? AND nb_hidden_2=? AND beta=? AND learn_beta_1=? AND learn_beta_per_neuron_1=? AND recurrent=? AND learn_weights_1=? AND learn_beta_out=? AND learn_weights_out=? AND learn_beta_per_neuron_out=? AND synapse_rank=?""",
+            (self.nb_hidden_1, self.nb_hidden_2, self.beta, int(self.learn_beta_1), int(self.learn_beta_per_neuron_1), int(self.recurrent), int(self.learn_weights_1), int(self.learn_beta_out), int(self.learn_weights_out), int(self.learn_beta_per_neuron_out), self.synapse_rank)
         )
         
         row = cur.fetchone()
@@ -114,22 +223,36 @@ class FrozenLinear(nn.Module):
         return out
 
 class RandmanSNN(nn.Module):
+    def _setup_fc1(self, num_inputs, num_hidden_1, learn_weights, synapse_rank):
+        FCType = nn.Linear if learn_weights else FrozenLinear
+        if synapse_rank == -1 or synapse_rank >= min(num_inputs, num_hidden_1):
+            self.fc1 = FCType(num_inputs, num_hidden_1, bias=False)
+        else:
+            self.fc1_u = FCType(num_inputs, synapse_rank, bias=False)
+            self.fc1_v = FCType(synapse_rank, num_hidden_1, bias=False)
+
+    def _setup_fc_out(self, num_hidden_1, num_outputs, learn_weights, nb_hidden_2):
+        FCType = nn.Linear if learn_weights else FrozenLinear
+        input_size = num_hidden_1 if nb_hidden_2 == -1 else nb_hidden_2
+        self.fc_out = FCType(input_size, num_outputs, bias=False)
+
     def __init__(self, num_inputs, num_outputs, snn_config: RandmanSNNConfig, spike_grad=None):
         super(RandmanSNN, self).__init__()
         self.recurrent = snn_config.recurrent
+        self.nb_hidden_1 = snn_config.nb_hidden_1  
         # If no spike_grad specified, use default
         if spike_grad is None:
             spike_grad = surrogate.fast_sigmoid(slope=25)
 
         # 1st hidden layer
-        self.fc1 = nn.Linear(num_inputs, snn_config.nb_hidden_1, bias=False) if snn_config.learn_weights else FrozenLinear(num_inputs, snn_config.nb_hidden_1, bias=False)
+        self._setup_fc1(num_inputs, snn_config.nb_hidden_1, snn_config.learn_weights_1, snn_config.synapse_rank)
         # add recurrent layer if needed
         if self.recurrent:
-            self.fc1_rec = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False) if snn_config.learn_weights else FrozenLinear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False)
+            self.fc1_rec = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False) if snn_config.learn_weights_1 else FrozenLinear(snn_config.nb_hidden_1, snn_config.nb_hidden_1, bias=False)
         # add LIF layer
         self.lif1 = snn.Leaky(
-            beta=snn_config.beta * torch.ones(snn_config.nb_hidden_1) if snn_config.learn_beta_per_neuron else snn_config.beta,
-            learn_beta=snn_config.learn_beta,
+            beta=snn_config.beta * torch.ones(snn_config.nb_hidden_1) if snn_config.learn_beta_per_neuron_1 else snn_config.beta,
+            learn_beta=snn_config.learn_beta_1,
             spike_grad=spike_grad
         )
 
@@ -138,21 +261,20 @@ class RandmanSNN(nn.Module):
             raise ValueError(f"Invalid value for nb_hidden_2: {snn_config.nb_hidden_2}. It should be -1 or a positive integer.")
         # 2nd hidden layer
         if snn_config.nb_hidden_2 != -1:
-            self.fc2 = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False) if snn_config.learn_weights else FrozenLinear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False)
+            self.fc2 = nn.Linear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False) if snn_config.learn_weights_1 else FrozenLinear(snn_config.nb_hidden_1, snn_config.nb_hidden_2, bias=False)
             # recurrent layer
             if self.recurrent:
-                self.fc2_rec = nn.Linear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False) if snn_config.learn_weights else FrozenLinear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False)
+                self.fc2_rec = nn.Linear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False) if snn_config.learn_weights_1 else FrozenLinear(snn_config.nb_hidden_2, snn_config.nb_hidden_2, bias=False)
             # LIF layer
             self.lif2 = snn.Leaky(
-            beta=snn_config.beta * torch.ones(snn_config.nb_hidden_2) if snn_config.learn_beta_per_neuron else snn_config.beta,
-            learn_beta=snn_config.learn_beta,
+            beta=snn_config.beta * torch.ones(snn_config.nb_hidden_2) if snn_config.learn_beta_per_neuron_1 else snn_config.beta,
+            learn_beta=snn_config.learn_beta_1,
             spike_grad=spike_grad
             )
 
         # Output layer
-        fc_out_input_size = snn_config.nb_hidden_1 if snn_config.nb_hidden_2 == -1 else snn_config.nb_hidden_2
-        self.fc_out = nn.Linear(fc_out_input_size, num_outputs, bias= False) if snn_config.learn_weights else FrozenLinear(fc_out_input_size, num_outputs, bias= False)
-        self.lif_out = snn.Leaky(beta=snn_config.beta * torch.ones(num_outputs) if snn_config.learn_beta_per_neuron else snn_config.beta, learn_beta=snn_config.learn_beta, spike_grad=spike_grad, reset_mechanism='none')
+        self._setup_fc_out(snn_config.nb_hidden_1, num_outputs, snn_config.learn_weights_out, snn_config.nb_hidden_2)
+        self.lif_out = snn.Leaky(beta=snn_config.beta * torch.ones(num_outputs) if snn_config.learn_beta_per_neuron_out else snn_config.beta, learn_beta=snn_config.learn_beta_out, spike_grad=spike_grad, reset_mechanism='none')
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -165,16 +287,19 @@ class RandmanSNN(nn.Module):
         x = x.permute(1, 0, 2)  # (time, batch, neurons)
 
         ## Initialize membrane potentials and spikes
-        self.mem1_rec = [torch.zeros(batch_size, self.fc1.out_features, device=x.device),]
-        self.spk1_rec = [torch.zeros(batch_size, self.fc1.weight.shape[0], device=x.device),]
+        self.mem1_rec = [torch.zeros(batch_size, self.nb_hidden_1, device=x.device),]
+        self.spk1_rec = [torch.zeros(batch_size, self.nb_hidden_1, device=x.device),]
         if hasattr(self, 'fc2'):
             self.mem2_rec = [torch.zeros(batch_size, self.fc2.out_features, device=x.device),]
             self.spk2_rec = [torch.zeros(batch_size, self.fc2.weight.shape[0], device=x.device),]
         self.mem_out_rec = [torch.zeros(batch_size, self.fc_out.out_features, device=x.device),]
 
         for t in range(time_steps):
-            # First hidden layer
-            input_1 = self.fc1(x[t])
+            # First hidden layer, either with or without low-rank
+            if hasattr(self, 'fc1'):
+                input_1 = self.fc1(x[t])
+            else: 
+                input_1 = self.fc1_v(self.fc1_u(x[t]))
             if self.recurrent:
                 input_1 += self.fc1_rec(self.spk1_rec[-1])
             spk1, mem1 = self.lif1(input_1, self.mem1_rec[-1])
